@@ -1,0 +1,50 @@
+﻿# Dependencies
+node_modules/
+**/node_modules/
+
+# Production / Build outputs
+dist/
+**/dist/
+out/
+**/out/
+web-build/
+**/web-build/
+
+# Expo
+.expo/
+**/.expo/
+expo-env.d.ts
+
+# Mobile native
+.kotlin/
+*.orig.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+syncbeats-mobile/ios/
+syncbeats-mobile/android/
+
+# Metro
+.metro-health-check*
+
+# Logs and Debugging
+*.log
+*.log*
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+pnpm-debug.log*
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.eslintcache
+*.tsbuildinfo
+
+# Environment variables & secrets
+.env
+.env.*
+!.env.example
+*.pem
