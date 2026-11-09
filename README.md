@@ -15,3 +15,4 @@ Refer to each directory's documentation for detailed installation and setup inst
 - [syncbeats-backend](./syncbeats-backend)
 - [syncbeats-desktop](./syncbeats-desktop)
 - [syncbeats-mobile](./syncbeats-mobile)
+
