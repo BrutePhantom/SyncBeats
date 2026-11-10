@@ -1,33 +1,45 @@
-import Versions from './components/Versions'
-import electronLogo from './assets/electron.svg'
+import { useState } from 'react'
 
 function App() {
-  const ipcHandle = () => window.electron.ipcRenderer.send('ping')
+  const [roomCode, setRoomCode] = useState('')
+  const [joined, setJoined] = useState(false)
+
+  const handleJoin = () => {
+    if (roomCode.trim()) setJoined(true)
+  }
 
   return (
-    <>
-      <img alt="logo" className="logo" src={electronLogo} />
-      <div className="creator">Powered by electron-vite</div>
-      <div className="text">
-        Build an Electron app with <span className="react">React</span>
-      </div>
-      <p className="tip">
-        Please try pressing <code>F12</code> to open the devTool
-      </p>
-      <div className="actions">
-        <div className="action">
-          <a href="https://electron-vite.org/" target="_blank" rel="noreferrer">
-            Documentation
-          </a>
+    <div style={{ padding: '20px', fontFamily: 'sans-serif', color: 'white' }}>
+      <h1>🎵 Syncbeats Desktop</h1>
+
+      {!joined ? (
+        <div>
+          <h2>Join a Room</h2>
+          <input
+            type="text"
+            placeholder="Enter Room Code"
+            value={roomCode}
+            onChange={(e) => setRoomCode(e.target.value)}
+            style={{ padding: '10px', fontSize: '16px' }}
+          />
+          <button onClick={handleJoin} style={{ padding: '10px 20px', marginLeft: '10px', cursor: 'pointer' }}>
+            Join
+          </button>
         </div>
-        <div className="action">
-          <a target="_blank" rel="noreferrer" onClick={ipcHandle}>
-            Send IPC
-          </a>
+      ) : (
+        <div>
+          <h2>Room: {roomCode}</h2>
+          <div style={{ marginTop: '30px', padding: '20px', background: '#222', borderRadius: '10px' }}>
+            <h3>Now Playing: Unknown Song</h3>
+            {/* The standard HTML5 Audio Player */}
+            <audio controls style={{ width: '100%', marginTop: '10px' }}>
+              <source src="https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3" type="audio/mpeg" />
+              Your browser does not support the audio element.
+            </audio>
+          </div>
         </div>
-      </div>
-      <Versions></Versions>
-    </>
+      )}
+    </div>
   )
 }
 
