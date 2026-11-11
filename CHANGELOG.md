@@ -1,96 +1,64 @@
-📋 Summary of Changes & Fixes
+# Summary of Changes & Fixes
 
-1. syncbeats-backend/package.json & syncbeats-backend/tsconfig.json
+This update addresses critical sync bugs, fixes environment configurations, and adds essential UI/UX features across all platforms (Backend, Desktop, and Mobile) to ensure a seamless real-time listening experience.
 
-Why:
-An accidental Expo installation had contaminated the backend with unused packages (expo, @types/react, typescript) and created a conflicting tsconfig.json extending Expo's base config.
-@prisma/client was listed under devDependencies instead of dependencies, which would cause runtime failures if deployed or installed without dev dependencies.
-Missing a dev convenience script (nodemon index.js).
+---
 
+## Backend (`syncbeats-backend`)
 
-How:
-Removed expo, @types/react, and typescript from backend dependencies.
-Moved @prisma/client into "dependencies".
-Added "dev": "nodemon index.js".
-Deleted the extraneous syncbeats-backend/tsconfig.json.
+### 1. Project Configuration (`package.json` & `tsconfig.json`)
+> **Why:** An accidental Expo installation contaminated the backend with unused packages and a conflicting `tsconfig.json`. Additionally, `@prisma/client` was incorrectly listed as a dev dependency, risking runtime crashes in production.
+* ** Fixes:**
+  * Removed `expo`, `@types/react`, and `typescript` from backend dependencies.
+  * Moved `@prisma/client` into standard `"dependencies"`.
+  * Added a convenient `"dev": "nodemon index.js"` script.
+  * Deleted the extraneous `tsconfig.json`.
 
+### 2. Server Logic (`index.js`)
+> **Why:** The server lacked a health check route, left late-joiners out of sync because it didn't account for elapsed playtime, and failed to clean up host roles if a user abruptly left.
+* ** Fixes:**
+  * **Health Checks:** Added `GET /` and `GET /health` routes returning `{ status: 'ok' }`.
+  * **Late-Join Math:** Updated `sync-state` to calculate elapsed time precisely `(currentTime += (Date.now() - state.updatedAt) / 1000)` if a track is actively playing.
+  * **Room Lifecycle:** Added a `leave-room` listener that cleans up room states and broadcasts a `host-left` event to clients.
+  * **Cleaner Codes:** Room codes are now generated as clean, 5-character uppercase alphanumeric strings.
 
-2. syncbeats-backend/index.js
+---
 
+## Desktop (`syncbeats-desktop`)
 
-Why:
-No Health Check: Visiting http://localhost:5000 returned Express default Cannot GET /, making it hard to verify if the server is healthy.
-Late-Join Sync Offset: When a user joined a room where a track was already playing, the backend sent the stored currentTime from when "play" was originally clicked rather than accounting for elapsed playback time. This left late joiners out of sync.
-No Clean Room Exit: If a client left a room without completely severing their socket connection, the backend had no handler to clear host roles or notify other members.
+### 3. Security Policy (`index.html`)
+> **Why:** Chromium/Electron's default Content Security Policy (CSP) blocked the remote audio stream (`https://www.soundhelix.com`) from playing.
+* ** Fixes:**
+  * Added `media-src 'self' https: http: blob: data:;` to the CSP header to allow external audio streaming.
+  * Expanded `connect-src` to properly permit local and standard WebSocket/HTTP connections.
 
+### 4. User Interface (`App.jsx`)
+> **Why:** Users had no visual feedback on their connection status, silent errors went unnoticed, and there was no way to leave a room without force-closing the app.
+* ** Fixes:**
+  * **Connection UI:** Added a real-time connection status badge in the header.
+  * **Error Handling:** Implemented an error banner to catch and display `room-error` and `control-denied` events.
+  * **Room Exit:** Added a **"Leave Room"** button that pauses local audio, gracefully emits a `leave-room` event, and resets the UI state.
+  * **Lifecycle Listeners:** Added listeners for `connect`, `disconnect`, and `connect_error`.
 
-How:
-Added GET / and GET /health routes returning { status: 'ok' }.
-In socket.on('join-room'), updated sync-state to compute elapsed time (currentTime += (Date.now() - state.updatedAt) / 1000) if the track is actively playing.
-Added a socket.on('leave-room') listener that leaves the room, cleans up host/room states if the host left, and broadcasts host-left.
-Made room code generation generate a clean 5-character uppercase alphanumeric code (substring(2, 7)).
+---
 
+## Mobile (`syncbeats-mobile`)
 
-3. syncbeats-desktop/src/renderer/index.html
+### 5. Mobile App Logic (`App.js`)
+> **Why:** The hardcoded backend IP blocked connectivity. Furthermore, a race condition caused sync events to be silently dropped if they arrived before the audio finished buffering over slower mobile connections.
+* ** Fixes:**
+  * **Dynamic Server URL:** Changed the default IP to `192.168.1.13` and added an editable **Backend Server URL** input field on the Join screen for easy testing on different networks.
+  * **Race Condition Fixed:** Introduced a `pendingSync` ref to queue incoming WebSocket actions until `Audio.Sound.createAsync()` finishes buffering, ensuring late joiners sync perfectly.
+  * **Accurate Playback State:** Bound `setOnPlaybackStatusUpdate` so the play/pause UI button accurately reflects the real-time audio state.
+  * **UX Improvements:** Added a "Leave Room" button, error alerts, and connection status badges to match the Desktop experience.
 
+---
 
-Why:
-Audio Playback Blocked by CSP: The Content Security Policy (<meta http-equiv="Content-Security-Policy">) lacked a media-src directive. By default in Chromium/Electron, this falls back to default-src 'self', which blocked streaming audio from https://www.soundhelix.com (or any remote audio URL).
+## Quick Run Guide
 
+To test these changes locally, run the following commands in three separate terminal windows:
 
-How:
-Added media-src 'self' https: http: blob: data:; to the CSP header.
-Expanded connect-src to permit local and standard websocket/HTTP connections.
-
-
-
-4. syncbeats-desktop/src/renderer/src/App.jsx
-
-
-Why:
-No Connection Feedback: There was no visual indicator showing whether the socket was connected, connecting, or failing.
-No Way to Leave a Room: Once a room was joined, the user could not exit without restarting or reloading the app.
-Silent Errors: Backend error events (room-error, control-denied) were not captured or displayed.
-
-
-How:
-Added socket lifecycle listeners (connect, disconnect, connect_error).
-Added an error banner for room-error and control-denied.
-Added a "Leave Room" button that pauses local audio, emits leave-room, and resets room state.
-Added a real-time connection badge in the header.
-
-5. syncbeats-mobile/App.js
-
-
-Why:
-Mismatched Hardcoded IP: The file hardcoded http://192.168.0.114:5000, while your machine's current active local IPv4 address is 192.168.1.13. This prevented the mobile app from connecting to the backend.
-Audio Buffering Race Condition: If a sync-state or sync-action arrived before Audio.Sound.createAsync() finished loading, the event was silently dropped because soundRef.current was still null.
-No UI for Backend URL: Changing network or testing on different devices required editing source code each time.
-No Exit Button or Error Display: Users had no way to leave a room, and errors went unhandled.
-
-
-How:
-Changed the default backend address to http://192.168.1.13:5000 and added an editable "Backend Server URL" input on the Join screen.
-Added a pendingSync ref to queue incoming sync actions until the audio finishes buffering, ensuring late joiners always sync even over slow mobile connections.
-Bound setOnPlaybackStatusUpdate so the play/pause button state accurately reflects playback state when audio finishes or stops.
-Added a "Leave Room" button, error alerts, and connection status badges.
-
-
-Quick Run Guide ==>
-
-Backend:
-bash
+**1. Start the Backend:**
+```bash
 cd syncbeats-backend
 npm run dev
-
-Desktop:
-bash
-cd syncbeats-desktop
-npm run dev
-
-Mobile:
-bash
-cd syncbeats-mobile
-npx expo start
-
-
