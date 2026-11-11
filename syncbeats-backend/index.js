@@ -17,6 +17,7 @@ const prisma = new PrismaClient();
 
 // Memory store for live room playback state
 const roomStates = {};
+const roomHosts = {};
 
 // Create room via Prisma
 app.post('/api/create-room', async (req, res) => {
@@ -34,17 +35,55 @@ io.on('connection', (socket) => {
     console.log('Client connected:', socket.id);
 
     socket.on('join-room', ({ roomCode }) => {
-        socket.join(roomCode);
-        console.log(`Socket ${socket.id} joined room ${roomCode}`);
+        const cleanRoomCode = String(roomCode || '').trim().toUpperCase();
 
-        if (roomStates[roomCode]) {
-            socket.emit('sync-state', roomStates[roomCode]);
+        if (!cleanRoomCode) {
+            socket.emit('room-error', { message: 'Enter a valid room code.' });
+            return;
+        }
+
+        socket.join(cleanRoomCode);
+
+        // The first device in a room becomes its host for this session.
+        if (!roomHosts[cleanRoomCode]) {
+            roomHosts[cleanRoomCode] = socket.id;
+        }
+
+        const isHost = roomHosts[cleanRoomCode] === socket.id;
+        socket.emit('room-role', { isHost });
+        console.log(`Socket ${socket.id} joined room ${cleanRoomCode} as ${isHost ? 'host' : 'follower'}`);
+
+        if (roomStates[cleanRoomCode]) {
+            socket.emit('sync-state', roomStates[cleanRoomCode]);
         }
     });
 
     socket.on('audio-action', ({ roomCode, action, currentTime }) => {
-        roomStates[roomCode] = { action, currentTime, updatedAt: Date.now() };
-        socket.to(roomCode).emit('sync-action', { action, currentTime });
+        const cleanRoomCode = String(roomCode || '').trim().toUpperCase();
+        const validActions = ['play', 'pause', 'seek'];
+
+        if (!socket.rooms.has(cleanRoomCode) || roomHosts[cleanRoomCode] !== socket.id) {
+            socket.emit('control-denied', { message: 'Only the room host can control playback.' });
+            return;
+        }
+
+        if (!validActions.includes(action) || !Number.isFinite(currentTime) || currentTime < 0) {
+            socket.emit('room-error', { message: 'Invalid playback action.' });
+            return;
+        }
+
+        roomStates[cleanRoomCode] = { action, currentTime, updatedAt: Date.now() };
+        socket.to(cleanRoomCode).emit('sync-action', { action, currentTime });
+    });
+
+    socket.on('disconnecting', () => {
+        socket.rooms.forEach((roomCode) => {
+            if (roomCode !== socket.id && roomHosts[roomCode] === socket.id) {
+                delete roomHosts[roomCode];
+                delete roomStates[roomCode];
+                socket.to(roomCode).emit('host-left');
+            }
+        });
     });
 
     socket.on('disconnect', () => {

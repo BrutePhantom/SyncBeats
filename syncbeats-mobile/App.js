@@ -4,7 +4,7 @@ import { Audio } from 'expo-av';
 import io from 'socket.io-client';
 
 // ⚠️ STEP 1: Put your laptop's Local IP address here (run `ipconfig` in terminal to find it)
-const BACKEND_URL = 'http://192.168.1.15:5000';
+const BACKEND_URL = 'http://192.168.0.114:5000';
 
 let socket;
 
@@ -12,6 +12,8 @@ export default function App() {
   const [roomCode, setRoomCode] = useState('');
   const [joined, setJoined] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isHost, setIsHost] = useState(false);
+  const [hostLeft, setHostLeft] = useState(false);
   const [statusText, setStatusText] = useState('Disconnected');
   const soundRef = useRef(null);
   const isRemoteEvent = useRef(false);
@@ -69,6 +71,18 @@ export default function App() {
       }
     });
 
+    socket.on('room-role', ({ isHost: assignedHost }) => {
+      setIsHost(assignedHost);
+      setHostLeft(false);
+    });
+
+    socket.on('host-left', () => {
+      soundRef.current?.pauseAsync().catch(() => {});
+      setIsPlaying(false);
+      setIsHost(false);
+      setHostLeft(true);
+    });
+
     return () => {
       if (soundRef.current) {
         soundRef.current.unloadAsync();
@@ -94,13 +108,15 @@ export default function App() {
   const handleJoin = () => {
     if (roomCode.trim()) {
       const cleanCode = roomCode.trim().toUpperCase();
+      setIsHost(false);
+      setHostLeft(false);
       socket.emit('join-room', { roomCode: cleanCode });
       setJoined(true);
     }
   };
 
   const togglePlayPause = async () => {
-    if (!soundRef.current || isRemoteEvent.current) return;
+    if (!isHost || !soundRef.current || isRemoteEvent.current) return;
 
     const status = await soundRef.current.getStatusAsync();
     if (!status.isLoaded) return;
@@ -144,10 +160,19 @@ export default function App() {
         <View style={styles.card}>
           <Text style={styles.subtitle}>Room: {roomCode.toUpperCase()}</Text>
           <Text style={styles.songTitle}>Now Playing: Sample Audio</Text>
+          <Text style={[styles.role, isHost ? styles.hostRole : styles.followerRole]}>
+            {isHost ? 'You are the host. Your playback controls the room.' : 'Following the host.'}
+          </Text>
 
-          <TouchableOpacity style={styles.playButton} onPress={togglePlayPause}>
-            <Text style={styles.playButtonText}>{isPlaying ? '⏸ PAUSE' : '▶ PLAY'}</Text>
-          </TouchableOpacity>
+          {isHost ? (
+            <TouchableOpacity style={styles.playButton} onPress={togglePlayPause}>
+              <Text style={styles.playButtonText}>{isPlaying ? '⏸ PAUSE' : '▶ PLAY'}</Text>
+            </TouchableOpacity>
+          ) : (
+            <Text style={styles.followerMessage}>
+              {hostLeft ? 'The host left the room. This session has ended.' : 'Playback controls are disabled.'}
+            </Text>
+          )}
         </View>
       )}
     </SafeAreaView>
@@ -160,6 +185,10 @@ const styles = StyleSheet.create({
   status: { fontSize: 12, color: '#1db954', marginBottom: 30 },
   subtitle: { fontSize: 20, fontWeight: '600', color: '#fff', marginBottom: 15 },
   songTitle: { fontSize: 16, color: '#b3b3b3', marginBottom: 25 },
+  role: { fontSize: 14, fontWeight: '600', textAlign: 'center', marginBottom: 10 },
+  hostRole: { color: '#1db954' },
+  followerRole: { color: '#b3b3b3' },
+  followerMessage: { color: '#777', fontSize: 14, textAlign: 'center', marginTop: 10 },
   card: { width: '90%', backgroundColor: '#1e1e1e', borderRadius: 16, padding: 25, alignItems: 'center' },
   input: { width: '100%', height: 50, backgroundColor: '#2a2a2a', borderRadius: 10, paddingHorizontal: 15, color: '#fff', fontSize: 16, marginBottom: 15 },
   button: { width: '100%', height: 50, backgroundColor: '#1db954', borderRadius: 10, justifyContent: 'center', alignItems: 'center' },
