@@ -1,19 +1,22 @@
 {
   "name": "syncbeats-backend",
   "version": "1.0.0",
+  "description": "Syncbeats real-time synchronization backend",
+  "main": "index.js",
   "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
     "db:push": "prisma db push",
-    "db:generate": "prisma generate",
-    "start": "node index.js"
+    "db:generate": "prisma generate"
   },
   "dependencies": {
+    "@prisma/client": "^5.22.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "socket.io": "^4.8.1"
   },
   "devDependencies": {
-    "@prisma/client": "^5.22.0",
     "nodemon": "^3.1.9",
     "prisma": "^5.22.0"
   }
