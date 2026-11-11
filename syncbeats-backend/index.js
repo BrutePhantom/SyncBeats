@@ -4,6 +4,9 @@ const { Server } = require('socket.io');
 const cors = require('cors');
 const { PrismaClient } = require('@prisma/client');
 
+//DO NOT HARDCODE ANY refrence based key like IP or PORT or anything please . just use process.env
+
+
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -19,9 +22,18 @@ const prisma = new PrismaClient();
 const roomStates = {};
 const roomHosts = {};
 
+// Health check / info route
+app.get('/', (req, res) => {
+    res.json({ status: 'ok', name: 'Syncbeats Backend', timestamp: new Date().toISOString() });
+});
+
+app.get('/health', (req, res) => {
+    res.json({ status: 'ok' });
+});
+
 // Create room via Prisma
 app.post('/api/create-room', async (req, res) => {
-    const code = Math.random().toString(36).substring(2, 6).toUpperCase();
+    const code = Math.random().toString(36).substring(2, 7).toUpperCase();
     try {
         const room = await prisma.room.create({ data: { code } });
         res.json({ success: true, room });
@@ -54,7 +66,16 @@ io.on('connection', (socket) => {
         console.log(`Socket ${socket.id} joined room ${cleanRoomCode} as ${isHost ? 'host' : 'follower'}`);
 
         if (roomStates[cleanRoomCode]) {
-            socket.emit('sync-state', roomStates[cleanRoomCode]);
+            const state = roomStates[cleanRoomCode];
+            let currentPlaybackTime = state.currentTime;
+            if (state.action === 'play') {
+                const elapsed = (Date.now() - state.updatedAt) / 1000;
+                currentPlaybackTime += elapsed;
+            }
+            socket.emit('sync-state', {
+                action: state.action,
+                currentTime: currentPlaybackTime
+            });
         }
     });
 
@@ -76,6 +97,19 @@ io.on('connection', (socket) => {
         socket.to(cleanRoomCode).emit('sync-action', { action, currentTime });
     });
 
+    socket.on('leave-room', ({ roomCode }) => {
+        const cleanRoomCode = String(roomCode || '').trim().toUpperCase();
+        if (!cleanRoomCode) return;
+
+        socket.leave(cleanRoomCode);
+
+        if (roomHosts[cleanRoomCode] === socket.id) {
+            delete roomHosts[cleanRoomCode];
+            delete roomStates[cleanRoomCode];
+            socket.to(cleanRoomCode).emit('host-left');
+        }
+    });
+
     socket.on('disconnecting', () => {
         socket.rooms.forEach((roomCode) => {
             if (roomCode !== socket.id && roomHosts[roomCode] === socket.id) {
@@ -91,6 +125,7 @@ io.on('connection', (socket) => {
     });
 });
 
-server.listen(5000, () => {
-    console.log('Backend server running on http://localhost:5000');
+const PORT = process.env.PORT || 5000;
+server.listen(PORT, () => {
+    console.log(`Backend server running on http://localhost:${PORT}`);
 });
