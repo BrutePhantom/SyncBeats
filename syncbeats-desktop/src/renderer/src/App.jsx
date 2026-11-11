@@ -6,6 +6,8 @@ const socket = io('http://localhost:5000')
 function App() {
   const [roomCode, setRoomCode] = useState('')
   const [joined, setJoined] = useState(false)
+  const [isHost, setIsHost] = useState(false)
+  const [hostLeft, setHostLeft] = useState(false)
   const audioRef = useRef(null)
   const isRemoteEvent = useRef(false)
 
@@ -18,7 +20,7 @@ function App() {
       audioRef.current.currentTime = currentTime
 
       if (action === 'play') {
-        audioRef.current.play().catch(() => { })
+        audioRef.current.play().catch(() => {})
       } else if (action === 'pause') {
         audioRef.current.pause()
       }
@@ -32,24 +34,43 @@ function App() {
     socket.on('sync-state', ({ action, currentTime }) => {
       if (!audioRef.current) return
       audioRef.current.currentTime = currentTime
-      if (action === 'play') audioRef.current.play().catch(() => { })
+      if (action === 'play') audioRef.current.play().catch(() => {})
+    })
+
+    socket.on('room-role', ({ isHost: assignedHost }) => {
+      setIsHost(assignedHost)
+      setHostLeft(false)
+    })
+
+    socket.on('host-left', () => {
+      isRemoteEvent.current = true
+      audioRef.current?.pause()
+      setIsHost(false)
+      setHostLeft(true)
+      setTimeout(() => {
+        isRemoteEvent.current = false
+      }, 200)
     })
 
     return () => {
       socket.off('sync-action')
       socket.off('sync-state')
+      socket.off('room-role')
+      socket.off('host-left')
     }
   }, [])
 
   const handleJoin = () => {
     if (roomCode.trim()) {
+      setIsHost(false)
+      setHostLeft(false)
       socket.emit('join-room', { roomCode: roomCode.toUpperCase() })
       setJoined(true)
     }
   }
 
   const sendAudioAction = (action) => {
-    if (isRemoteEvent.current || !audioRef.current) return
+    if (!isHost || isRemoteEvent.current || !audioRef.current) return
     socket.emit('audio-action', {
       roomCode: roomCode.toUpperCase(),
       action,
@@ -71,24 +92,39 @@ function App() {
             onChange={(e) => setRoomCode(e.target.value)}
             style={{ padding: '10px', fontSize: '16px' }}
           />
-          <button onClick={handleJoin} style={{ padding: '10px 20px', marginLeft: '10px', cursor: 'pointer' }}>
+          <button
+            onClick={handleJoin}
+            style={{ padding: '10px 20px', marginLeft: '10px', cursor: 'pointer' }}
+          >
             Join Room
           </button>
         </div>
       ) : (
         <div>
           <h2>Room: {roomCode.toUpperCase()}</h2>
-          <div style={{ marginTop: '30px', padding: '20px', background: '#222', borderRadius: '10px' }}>
+          <div
+            style={{ marginTop: '30px', padding: '20px', background: '#222', borderRadius: '10px' }}
+          >
             <h3>Now Playing: Sample Audio</h3>
+            <p style={{ color: isHost ? '#1db954' : '#b3b3b3' }}>
+              {isHost
+                ? 'You are the host. Your playback controls the room.'
+                : hostLeft
+                  ? 'The host left the room. This session has ended.'
+                  : 'Following the host. Playback controls are disabled.'}
+            </p>
             <audio
               ref={audioRef}
-              controls
+              controls={isHost}
               style={{ width: '100%', marginTop: '10px' }}
               onPlay={() => sendAudioAction('play')}
               onPause={() => sendAudioAction('pause')}
               onSeeked={() => sendAudioAction('seek')}
             >
-              <source src="https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3" type="audio/mpeg" />
+              <source
+                src="https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3"
+                type="audio/mpeg"
+              />
               Your browser does not support the audio element.
             </audio>
           </div>
