@@ -7,8 +7,21 @@ datasource db {
   url      = "file:./dev.db"
 }
 
-model Room {
+model Song {
   id        String   @id @default(uuid())
-  code      String   @unique
+  title     String
+  artist    String
+  duration  Float
+  fileUrl   String
+  coverUrl  String?
   createdAt DateTime @default(now())
+  rooms     Room[]
+}
+
+model Room {
+  id            String   @id @default(uuid())
+  code          String   @unique
+  currentSongId String?
+  currentSong   Song?    @relation(fields: [currentSongId], references: [id])
+  createdAt     DateTime @default(now())
 }
