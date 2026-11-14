@@ -10,7 +10,7 @@ import {
   ScrollView,
   FlatList,
 } from 'react-native';
-import { Audio } from 'expo-av';
+import { createAudioPlayer, setAudioModeAsync } from 'expo-audio';
 import * as FileSystem from 'expo-file-system';
 import io from 'socket.io-client';
 
@@ -43,7 +43,8 @@ export default function App() {
   const [errorMessage, setErrorMessage] = useState('');
 
   const socketRef = useRef(null);
-  const soundRef = useRef(null);
+  const playerRef = useRef(null);
+  const statusSubscriptionRef = useRef(null);
   const isRemoteEvent = useRef(false);
   const pendingSync = useRef(null);
   const downloadResumableRef = useRef(null);
@@ -73,10 +74,15 @@ export default function App() {
       setDownloadProgress(0);
       setCurrentSong(song);
 
-      // Unload previous sound
-      if (soundRef.current) {
-        await soundRef.current.unloadAsync().catch(() => {});
-        soundRef.current = null;
+      // Clean up previous player & subscription
+      if (statusSubscriptionRef.current) {
+        statusSubscriptionRef.current.remove();
+        statusSubscriptionRef.current = null;
+      }
+      if (playerRef.current) {
+        playerRef.current.pause();
+        playerRef.current.release();
+        playerRef.current = null;
       }
 
       // Delete old cache file if present
@@ -106,49 +112,47 @@ export default function App() {
 
       setDownloadProgress(100);
 
-      // Load from cached local file
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: false,
-        playsInSilentModeIOS: true,
-        shouldDuckAndroid: true,
-        staysActiveInBackground: true,
+      // Configure audio mode for background / silent switch playback
+      await setAudioModeAsync({
+        playsInSilentMode: true,
+        shouldPlayInBackground: true,
       }).catch(() => {});
 
-      const { sound } = await Audio.Sound.createAsync(
-        { uri: result.uri },
-        { shouldPlay: false }
-      );
-      soundRef.current = sound;
+      // Create new modern AudioPlayer from cached local URI
+      const player = createAudioPlayer(result.uri);
+      playerRef.current = player;
 
-      sound.setOnPlaybackStatusUpdate((status) => {
-        if (!status.isLoaded) return;
-        setIsPlaying(status.isPlaying);
+      const sub = player.addListener('playbackStatusUpdate', (status) => {
+        setIsPlaying(status.playing);
       });
+      statusSubscriptionRef.current = sub;
 
-      // Apply any sync that arrived while downloading
+      // Apply any sync action that arrived while downloading
       if (pendingSync.current) {
         const { action, currentTime } = pendingSync.current;
         pendingSync.current = null;
-        await sound.setPositionAsync(Math.floor(currentTime * 1000));
+        await player.seekTo(currentTime);
         if (action === 'play') {
-          await sound.playAsync();
+          player.play();
         }
       }
 
       setIsDownloading(false);
     } catch (err) {
-      console.log('Download/load error, falling back to stream:', err);
-      // Fallback: stream directly without caching
+      console.log('Download/load error, falling back to direct stream:', err);
+      // Fallback: stream directly from backend without caching
       try {
-        const { sound } = await Audio.Sound.createAsync(
-          { uri: song.fileUrl },
-          { shouldPlay: false }
-        );
-        soundRef.current = sound;
-        sound.setOnPlaybackStatusUpdate((status) => {
-          if (!status.isLoaded) return;
-          setIsPlaying(status.isPlaying);
+        await setAudioModeAsync({
+          playsInSilentMode: true,
+          shouldPlayInBackground: true,
+        }).catch(() => {});
+
+        const player = createAudioPlayer(song.fileUrl);
+        playerRef.current = player;
+        const sub = player.addListener('playbackStatusUpdate', (status) => {
+          setIsPlaying(status.playing);
         });
+        statusSubscriptionRef.current = sub;
       } catch (streamErr) {
         console.log('Stream fallback also failed:', streamErr);
       }
@@ -192,8 +196,8 @@ export default function App() {
 
     // Host changed the song mid-session
     socket.on('song-changed', ({ song, currentTime }) => {
-      if (soundRef.current) {
-        soundRef.current.pauseAsync().catch(() => {});
+      if (playerRef.current) {
+        playerRef.current.pause();
       }
       setShowSongPicker(false);
       pendingSync.current = { action: 'pause', currentTime: currentTime || 0 };
@@ -201,39 +205,41 @@ export default function App() {
     });
 
     socket.on('sync-action', async ({ action, currentTime }) => {
-      if (!soundRef.current) {
+      if (!playerRef.current) {
         pendingSync.current = { action, currentTime };
         return;
       }
       isRemoteEvent.current = true;
       try {
-        await soundRef.current.setPositionAsync(Math.floor(currentTime * 1000));
+        await playerRef.current.seekTo(currentTime);
         if (action === 'play') {
-          await soundRef.current.playAsync();
+          playerRef.current.play();
         } else if (action === 'pause') {
-          await soundRef.current.pauseAsync();
+          playerRef.current.pause();
         }
       } catch (err) {
         console.log('sync-action error:', err);
       }
-      setTimeout(() => { isRemoteEvent.current = false; }, 300);
+      setTimeout(() => {
+        isRemoteEvent.current = false;
+      }, 300);
     });
 
     socket.on('sync-state', async ({ action, currentTime }) => {
-      if (!soundRef.current) {
+      if (!playerRef.current) {
         pendingSync.current = { action, currentTime };
         return;
       }
       try {
-        await soundRef.current.setPositionAsync(Math.floor(currentTime * 1000));
-        if (action === 'play') await soundRef.current.playAsync();
+        await playerRef.current.seekTo(currentTime);
+        if (action === 'play') playerRef.current.play();
       } catch (err) {
         console.log('sync-state error:', err);
       }
     });
 
     socket.on('host-left', () => {
-      soundRef.current?.pauseAsync().catch(() => {});
+      playerRef.current?.pause();
       setIsPlaying(false);
       setIsHost(false);
       setHostLeft(true);
@@ -243,7 +249,15 @@ export default function App() {
     socket.on('control-denied', ({ message }) => setErrorMessage(message));
 
     return () => {
-      if (soundRef.current) soundRef.current.unloadAsync().catch(() => {});
+      if (statusSubscriptionRef.current) {
+        statusSubscriptionRef.current.remove();
+        statusSubscriptionRef.current = null;
+      }
+      if (playerRef.current) {
+        playerRef.current.pause();
+        playerRef.current.release();
+        playerRef.current = null;
+      }
       socket.disconnect();
       // Clean up cached file on unmount
       FileSystem.deleteAsync(CACHED_TRACK_PATH, { idempotent: true }).catch(() => {});
@@ -295,10 +309,14 @@ export default function App() {
 
   // ─── Leave room & clean temp cache ────────────────────────────────────────
   const handleLeave = async () => {
-    if (soundRef.current) {
-      await soundRef.current.pauseAsync().catch(() => {});
-      await soundRef.current.unloadAsync().catch(() => {});
-      soundRef.current = null;
+    if (statusSubscriptionRef.current) {
+      statusSubscriptionRef.current.remove();
+      statusSubscriptionRef.current = null;
+    }
+    if (playerRef.current) {
+      playerRef.current.pause();
+      playerRef.current.release();
+      playerRef.current = null;
     }
     socketRef.current?.emit('leave-room', { roomCode: roomCode.trim().toUpperCase() });
     await FileSystem.deleteAsync(CACHED_TRACK_PATH, { idempotent: true }).catch(() => {});
@@ -323,18 +341,15 @@ export default function App() {
 
   // ─── Host play/pause ───────────────────────────────────────────────────────
   const togglePlayPause = async () => {
-    if (!isHost || !soundRef.current || isRemoteEvent.current || isDownloading) return;
-    const status = await soundRef.current.getStatusAsync();
-    if (!status.isLoaded) return;
-
-    const currentTime = status.positionMillis / 1000;
+    if (!isHost || !playerRef.current || isRemoteEvent.current || isDownloading) return;
+    const currentTime = playerRef.current.currentTime || 0;
     const cleanCode = roomCode.trim().toUpperCase();
 
     if (isPlaying) {
-      await soundRef.current.pauseAsync();
+      playerRef.current.pause();
       socketRef.current?.emit('audio-action', { roomCode: cleanCode, action: 'pause', currentTime });
     } else {
-      await soundRef.current.playAsync();
+      playerRef.current.play();
       socketRef.current?.emit('audio-action', { roomCode: cleanCode, action: 'play', currentTime });
     }
   };
@@ -419,7 +434,9 @@ export default function App() {
                         onPress={() => setSelectedSongId(item.id)}
                       >
                         <View style={{ flex: 1 }}>
-                          <Text style={[styles.songTitle, sel && { color: '#1db954' }]}>{item.title}</Text>
+                          <Text style={[styles.songTitle, sel && { color: '#1db954', fontWeight: 'bold' }]}>
+                            {item.title}
+                          </Text>
                           <Text style={styles.songArtist}>{item.artist}</Text>
                         </View>
                         <Text style={styles.songDuration}>{formatDuration(item.duration)}</Text>
@@ -431,15 +448,16 @@ export default function App() {
                 <TouchableOpacity
                   style={[styles.button, styles.buttonGreen, { marginTop: 12 }]}
                   onPress={handleCreateRoom}
-                  disabled={!selectedSongId}
+                  disabled={songs.length === 0}
                 >
-                  <Text style={styles.buttonText}>Create Room</Text>
+                  <Text style={styles.buttonText}>Start Room with Selected Track</Text>
                 </TouchableOpacity>
+
                 <TouchableOpacity
                   style={[styles.button, styles.buttonDark, { marginTop: 8 }]}
                   onPress={() => setShowCreateFlow(false)}
                 >
-                  <Text style={styles.buttonText}>Cancel</Text>
+                  <Text style={[styles.buttonText, { color: '#888' }]}>Cancel</Text>
                 </TouchableOpacity>
               </View>
             )}
@@ -648,50 +666,51 @@ const styles = StyleSheet.create({
     fontSize: 14,
     borderWidth: 1,
     borderColor: '#333',
-    marginBottom: 8,
+    marginBottom: 12,
   },
   button: {
     width: '100%',
-    height: 48,
+    height: 46,
     borderRadius: 8,
-    justifyContent: 'center',
     alignItems: 'center',
+    justifyContent: 'center',
   },
   buttonGreen: { backgroundColor: '#1db954' },
-  buttonDark: { backgroundColor: '#2a2a2a' },
+  buttonDark: { backgroundColor: '#2a2a2a', borderWidth: 1, borderColor: '#333' },
   buttonText: { color: '#fff', fontSize: 15, fontWeight: 'bold' },
   divider: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginVertical: 10,
-    width: '100%',
+    marginVertical: 14,
   },
   dividerLine: { flex: 1, height: 1, backgroundColor: '#2a2a2a' },
-  dividerText: { color: '#555', marginHorizontal: 10, fontSize: 12 },
+  dividerText: { color: '#555', marginHorizontal: 12, fontSize: 12 },
   songRow: {
     flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
     padding: 10,
+    backgroundColor: '#252525',
     borderRadius: 8,
-    backgroundColor: '#282828',
-    marginBottom: 8,
+    marginBottom: 6,
+    borderWidth: 1,
+    borderColor: 'transparent',
   },
   songRowSelected: {
-    backgroundColor: '#1db95420',
-    borderWidth: 1,
     borderColor: '#1db954',
+    backgroundColor: '#1db95415',
   },
-  songTitle: { fontSize: 14, color: '#fff', fontWeight: '500' },
-  songArtist: { fontSize: 12, color: '#888', marginTop: 2 },
-  songDuration: { fontSize: 12, color: '#aaa' },
+  songTitle: { color: '#fff', fontSize: 14, fontWeight: '500' },
+  songArtist: { color: '#777', fontSize: 12, marginTop: 2 },
+  songDuration: { color: '#777', fontSize: 12 },
   headerRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 16,
   },
-  roomLabel: { fontSize: 10, color: '#666', letterSpacing: 1, textTransform: 'uppercase' },
-  roomCode: { fontSize: 22, fontWeight: 'bold', color: '#fff', letterSpacing: 1 },
+  roomLabel: { fontSize: 11, color: '#777', textTransform: 'uppercase' },
+  roomCode: { fontSize: 24, fontWeight: 'bold', color: '#1db954', letterSpacing: 2 },
   iconButton: {
     paddingHorizontal: 10,
     paddingVertical: 6,
@@ -701,7 +720,7 @@ const styles = StyleSheet.create({
     borderColor: '#444',
   },
   leaveButton: {
-    paddingHorizontal: 12,
+    paddingHorizontal: 10,
     paddingVertical: 6,
     backgroundColor: '#ff444420',
     borderRadius: 6,
@@ -711,7 +730,7 @@ const styles = StyleSheet.create({
   leaveButtonText: { color: '#ff6b6b', fontSize: 12, fontWeight: '600' },
   songPickerPanel: {
     backgroundColor: '#252525',
-    borderRadius: 10,
+    borderRadius: 8,
     padding: 12,
     marginBottom: 14,
     borderWidth: 1,
@@ -720,27 +739,22 @@ const styles = StyleSheet.create({
   nowPlayingCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    backgroundColor: '#252525',
-    padding: 14,
-    borderRadius: 10,
-    marginBottom: 14,
-  },
-  nowPlayingEmoji: { fontSize: 28 },
-  nowPlayingTitle: { fontSize: 16, fontWeight: '700', color: '#fff' },
-  nowPlayingArtist: { fontSize: 12, color: '#aaa', marginTop: 3 },
-  progressContainer: {
     backgroundColor: '#252525',
     padding: 12,
     borderRadius: 8,
     marginBottom: 14,
+    gap: 12,
   },
+  nowPlayingEmoji: { fontSize: 28 },
+  nowPlayingTitle: { color: '#fff', fontSize: 16, fontWeight: '600' },
+  nowPlayingArtist: { color: '#aaa', fontSize: 13, marginTop: 2 },
+  progressContainer: { marginBottom: 14 },
   progressLabelRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     marginBottom: 6,
   },
-  progressLabel: { fontSize: 11, color: '#aaa' },
+  progressLabel: { color: '#aaa', fontSize: 12 },
   progressTrack: {
     width: '100%',
     height: 6,
@@ -748,27 +762,24 @@ const styles = StyleSheet.create({
     borderRadius: 3,
     overflow: 'hidden',
   },
-  progressFill: {
-    height: '100%',
-    backgroundColor: '#1db954',
-  },
-  roleText: { fontSize: 13, fontWeight: '600', marginBottom: 14, textAlign: 'center' },
+  progressFill: { height: '100%', backgroundColor: '#1db954' },
+  roleText: { fontSize: 13, textAlign: 'center', marginBottom: 14 },
   roleHost: { color: '#1db954' },
-  roleFollower: { color: '#b3b3b3' },
+  roleFollower: { color: '#aaa' },
   playButton: {
-    height: 52,
+    width: '100%',
+    height: 50,
     backgroundColor: '#1db954',
-    borderRadius: 26,
-    justifyContent: 'center',
+    borderRadius: 25,
     alignItems: 'center',
-    marginTop: 4,
+    justifyContent: 'center',
   },
-  playButtonText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
+  playButtonText: { color: '#fff', fontSize: 16, fontWeight: 'bold', letterSpacing: 1 },
   followerInfo: {
     backgroundColor: '#252525',
-    padding: 14,
     borderRadius: 8,
-    marginTop: 4,
+    padding: 12,
+    alignItems: 'center',
   },
   followerInfoText: { color: '#aaa', fontSize: 13, textAlign: 'center' },
 });
