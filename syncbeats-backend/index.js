@@ -1,6 +1,7 @@
 const express = require('express');
 const http = require('http');
 const path = require('path');
+const fs = require('fs');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const { PrismaClient } = require('@prisma/client');
@@ -11,8 +12,12 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Serve static songs if placed in public/songs
-app.use('/songs', express.static(path.join(__dirname, 'public/songs')));
+// Songs folder: store and serve local MP3 files
+const songsDir = process.env.SONGS_DIR || path.join(__dirname, 'public/songs');
+if (!fs.existsSync(songsDir)) {
+    fs.mkdirSync(songsDir, { recursive: true });
+}
+app.use('/songs', express.static(songsDir));
 
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -26,7 +31,138 @@ const roomStates = {};
 const roomHosts = {};
 const roomSongs = {};
 
-// Health check / info route
+// ─── Helpers for Song Auto-Sync & Dynamic URLs ──────────────────────────────
+
+function parseSongMetadata(filename) {
+    const base = filename.replace(/\.(mp3|wav|ogg|m4a|aac|flac)$/i, '');
+
+    // Format: "Artist - Title.mp3"
+    if (base.includes(' - ')) {
+        const parts = base.split(' - ');
+        const artist = parts[0].trim();
+        const title = parts.slice(1).join(' - ').trim();
+        return {
+            title: title || base,
+            artist: artist || 'Unknown Artist'
+        };
+    }
+
+    // Format: "SoundHelix-Song-X.mp3"
+    if (base.startsWith('SoundHelix-Song-')) {
+        const num = base.replace('SoundHelix-Song-', '');
+        return {
+            title: `SoundHelix Song ${num}`,
+            artist: 'T. Schürger'
+        };
+    }
+
+    // Default: Clean up hyphens and underscores
+    const cleaned = base.replace(/[-_]+/g, ' ').trim();
+    return {
+        title: cleaned || filename,
+        artist: 'Local Library'
+    };
+}
+
+// Scans songs directory and syncs all MP3 files into the Prisma database
+async function syncSongsFromFolder() {
+    try {
+        if (!fs.existsSync(songsDir)) return;
+
+        const files = fs.readdirSync(songsDir).filter((file) =>
+            /\.(mp3|wav|ogg|m4a|aac|flac)$/i.test(file)
+        );
+
+        for (const filename of files) {
+            const filePath = path.join(songsDir, filename);
+            const stats = fs.statSync(filePath);
+            const relativeUrl = `/songs/${encodeURIComponent(filename)}`;
+            const { title, artist } = parseSongMetadata(filename);
+
+            // Estimate duration in seconds (~192 kbps bitrate)
+            const estimatedDuration = Math.max(30, Math.round(stats.size / 24000));
+
+            const existing = await prisma.song.findFirst({
+                where: {
+                    OR: [
+                        { fileUrl: { contains: encodeURIComponent(filename) } },
+                        { fileUrl: { contains: filename } },
+                        { title: title }
+                    ]
+                }
+            });
+
+            if (!existing) {
+                await prisma.song.create({
+                    data: {
+                        title,
+                        artist,
+                        duration: estimatedDuration,
+                        fileUrl: relativeUrl,
+                        coverUrl: null
+                    }
+                });
+                console.log(`[Song Library] Added from folder: "${title}" (${artist})`);
+            } else if (existing.fileUrl.startsWith('http')) {
+                // If previously pointing to external URL, update to local folder path
+                await prisma.song.update({
+                    where: { id: existing.id },
+                    data: { fileUrl: relativeUrl }
+                });
+                console.log(`[Song Library] Swapped remote URL with local MP3 for: "${title}"`);
+            }
+        }
+    } catch (err) {
+        console.error('[Song Library] Folder sync error:', err.message);
+    }
+}
+
+// Dynamically formats fileUrl into a fully-qualified URL for Express requests
+function formatSongWithHost(song, req) {
+    if (!song) return null;
+    let fileUrl = song.fileUrl;
+    if (fileUrl && !fileUrl.startsWith('http://') && !fileUrl.startsWith('https://')) {
+        const protocol = req ? (req.headers['x-forwarded-proto'] || req.protocol) : 'http';
+        const host = req ? req.get('host') : (process.env.BACKEND_HOST || `localhost:${PORT}`);
+        fileUrl = `${protocol}://${host}${fileUrl.startsWith('/') ? '' : '/'}${fileUrl}`;
+    }
+    return { ...song, fileUrl };
+}
+
+// Dynamically formats fileUrl into a fully-qualified URL for Socket.io events
+function formatSongForSocket(song, socket) {
+    if (!song) return null;
+    let fileUrl = song.fileUrl;
+    if (fileUrl && !fileUrl.startsWith('http://') && !fileUrl.startsWith('https://')) {
+        const host = socket?.handshake?.headers?.host || (process.env.BACKEND_HOST || `localhost:${PORT}`);
+        fileUrl = `http://${host}${fileUrl.startsWith('/') ? '' : '/'}${fileUrl}`;
+    }
+    return { ...song, fileUrl };
+}
+
+// Watch songs folder for when the host drops in new MP3 files
+let syncDebounceTimer = null;
+try {
+    fs.watch(songsDir, (eventType, filename) => {
+        if (filename && /\.(mp3|wav|ogg|m4a|aac|flac)$/i.test(filename)) {
+            if (syncDebounceTimer) clearTimeout(syncDebounceTimer);
+            syncDebounceTimer = setTimeout(async () => {
+                console.log(`[Folder Watcher] File event "${eventType}" on ${filename}. Updating database...`);
+                await syncSongsFromFolder();
+                const rawSongs = await prisma.song.findMany({ orderBy: { createdAt: 'asc' } });
+                io.emit('songs-updated', rawSongs);
+            }, 1000);
+        }
+    });
+} catch (watchErr) {
+    console.warn('[Folder Watcher] Notice:', watchErr.message);
+}
+
+// Initial sync on startup
+syncSongsFromFolder();
+
+// ─── HTTP Endpoints ────────────────────────────────────────────────────────
+
 app.get('/', (req, res) => {
     res.json({ status: 'ok', name: 'Syncbeats Backend', timestamp: new Date().toISOString() });
 });
@@ -38,9 +174,11 @@ app.get('/health', (req, res) => {
 // Song Library APIs
 app.get('/api/songs', async (req, res) => {
     try {
-        const songs = await prisma.song.findMany({
+        await syncSongsFromFolder();
+        const rawSongs = await prisma.song.findMany({
             orderBy: { createdAt: 'asc' }
         });
+        const songs = rawSongs.map((s) => formatSongWithHost(s, req));
         res.json({ success: true, songs });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
@@ -55,7 +193,22 @@ app.get('/api/songs/:id', async (req, res) => {
         if (!song) {
             return res.status(404).json({ success: false, error: 'Song not found' });
         }
-        res.json({ success: true, song });
+        res.json({ success: true, song: formatSongWithHost(song, req) });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Manual sync trigger
+app.post('/api/songs/sync', async (req, res) => {
+    try {
+        await syncSongsFromFolder();
+        const rawSongs = await prisma.song.findMany({
+            orderBy: { createdAt: 'asc' }
+        });
+        const songs = rawSongs.map((s) => formatSongWithHost(s, req));
+        io.emit('songs-updated', rawSongs);
+        res.json({ success: true, count: songs.length, songs });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
@@ -72,7 +225,6 @@ app.post('/api/create-room', async (req, res) => {
             song = await prisma.song.findUnique({ where: { id: songId } });
         }
         if (!song) {
-            // Default to the first song in library if available
             song = await prisma.song.findFirst({ orderBy: { createdAt: 'asc' } });
         }
 
@@ -88,13 +240,19 @@ app.post('/api/create-room', async (req, res) => {
             roomSongs[code] = song;
         }
 
-        res.json({ success: true, room });
+        const formattedRoom = {
+            ...room,
+            currentSong: formatSongWithHost(room.currentSong, req)
+        };
+
+        res.json({ success: true, room: formattedRoom });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
 });
 
-// Socket.io Real-time events
+// ─── Socket.io Real-time events ───────────────────────────────────────────
+
 io.on('connection', (socket) => {
     console.log('Client connected:', socket.id);
 
@@ -140,7 +298,7 @@ io.on('connection', (socket) => {
         }
 
         if (currentSong) {
-            socket.emit('room-song', currentSong);
+            socket.emit('room-song', formatSongForSocket(currentSong, socket));
         }
 
         if (roomStates[cleanRoomCode]) {
@@ -181,7 +339,7 @@ io.on('connection', (socket) => {
             roomStates[cleanRoomCode] = { action: 'pause', currentTime: 0, updatedAt: Date.now() };
 
             io.to(cleanRoomCode).emit('song-changed', {
-                song,
+                song: formatSongForSocket(song, socket),
                 action: 'pause',
                 currentTime: 0
             });
@@ -241,4 +399,5 @@ io.on('connection', (socket) => {
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
     console.log(`Backend server running on http://localhost:${PORT}`);
+    console.log(`Songs folder: ${songsDir}`);
 });
