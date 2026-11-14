@@ -183,6 +183,10 @@ export default function App() {
       setErrorMessage(`Cannot connect to backend at ${serverUrl}`);
     });
 
+    socket.on('songs-updated', () => {
+      fetchSongs(serverUrl);
+    });
+
     socket.on('room-role', ({ isHost: assignedHost }) => {
       setIsHost(assignedHost);
       setHostLeft(false);
