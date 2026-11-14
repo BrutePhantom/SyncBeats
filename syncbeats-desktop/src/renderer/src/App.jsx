@@ -1,7 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import io from 'socket.io-client'
 
-const BACKEND_URL = 'http://localhost:5000'
+const BACKEND_URL =
+  (typeof process !== 'undefined' && process.env?.VITE_BACKEND_URL) ||
+  import.meta.env.VITE_BACKEND_URL ||
+  'http://localhost:5000'
+
 const socket = io(BACKEND_URL)
 
 function App() {
@@ -14,6 +18,7 @@ function App() {
   const [hostLeft, setHostLeft] = useState(false)
   const [statusText, setStatusText] = useState('Connecting...')
   const [errorMessage, setErrorMessage] = useState('')
+  const [copied, setCopied] = useState(false)
 
   // Pre-download / Blob caching state
   const [audioBlobUrl, setAudioBlobUrl] = useState('')
@@ -34,7 +39,7 @@ function App() {
         setSelectedSongId((prev) => prev || (data.songs[0] ? data.songs[0].id : null))
       }
     } catch {
-      // Backend might still be starting
+      // Backend might still be starting or unreachable
     }
   }, [])
 
@@ -262,6 +267,13 @@ function App() {
     })
   }
 
+  const handleCopyCode = () => {
+    if (!roomCode) return
+    navigator.clipboard.writeText(roomCode.toUpperCase())
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
   const sendAudioAction = (action) => {
     if (!isHost || isRemoteEvent.current || !audioRef.current) return
     socket.emit('audio-action', {
@@ -278,86 +290,73 @@ function App() {
     return `${mins}:${secs < 10 ? '0' : ''}${secs}`
   }
 
-  return (
-    <div
-      style={{
-        minHeight: '100vh',
-        padding: '30px',
-        fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-        background: '#121212',
-        color: '#ffffff',
-        boxSizing: 'border-box'
-      }}
-    >
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h1 style={{ margin: 0, fontSize: '26px' }}>🎵 Syncbeats Desktop</h1>
-        <span
-          style={{
-            fontSize: '12px',
-            padding: '5px 12px',
-            borderRadius: '12px',
-            background: statusText.startsWith('Connected') ? '#1db95422' : '#ff444422',
-            color: statusText.startsWith('Connected') ? '#1db954' : '#ff6b6b',
-            border: `1px solid ${statusText.startsWith('Connected') ? '#1db954' : '#ff6b6b'}`
-          }}
-        >
-          {statusText}
-        </span>
-      </div>
+  const isConnected = statusText.startsWith('Connected')
 
-      {/* Error Banner */}
+  return (
+    <div className="app-container">
+      {/* Top Header Bar */}
+      <header className="app-header">
+        <div className="brand-section">
+          <div className="brand-icon-wrapper">🎧</div>
+          <div>
+            <h1 className="brand-title">Syncbeats</h1>
+            <p className="brand-subtitle">Synchronized Audio Listening</p>
+          </div>
+        </div>
+
+        <div className={`status-badge ${isConnected ? 'connected' : 'disconnected'}`}>
+          <span className="status-dot" />
+          <span>{statusText}</span>
+        </div>
+      </header>
+
+      {/* Error Notification */}
       {errorMessage ? (
-        <div
-          style={{
-            marginTop: '15px',
-            padding: '10px 15px',
-            backgroundColor: '#ff444422',
-            color: '#ff6b6b',
-            borderRadius: '8px',
-            border: '1px solid #ff4444'
-          }}
-        >
-          {errorMessage}
+        <div className="alert-error">
+          <span>⚠️ {errorMessage}</span>
+          <button
+            onClick={() => setErrorMessage('')}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: '#fca5a5',
+              cursor: 'pointer',
+              fontSize: '16px'
+            }}
+          >
+            ✕
+          </button>
         </div>
       ) : null}
 
       {!joined ? (
-        /* Lobby: Choice between Creating with a Song or Joining */
-        <div
-          style={{
-            marginTop: '30px',
-            display: 'grid',
-            gridTemplateColumns: '1.2fr 1fr',
-            gap: '20px'
-          }}
-        >
-          {/* Card A: Host a room with chosen song */}
-          <div
-            style={{
-              background: '#1e1e1e',
-              padding: '25px',
-              borderRadius: '12px',
-              border: '1px solid #2a2a2a'
-            }}
-          >
-            <h2 style={{ marginTop: 0, fontSize: '20px' }}>1. Select a Song & Host</h2>
-            <p style={{ color: '#aaa', fontSize: '13px', marginBottom: '15px' }}>
-              Choose a track from the library. Followers who join will download and listen in sync.
+        /* Lobby View */
+        <main className="lobby-grid">
+          {/* Card 1: Host a Session */}
+          <section className="dark-card">
+            <div className="card-title-row">
+              <span style={{ fontSize: '20px' }}>🎶</span>
+              <h2 className="card-title">Host a Room</h2>
+            </div>
+            <p className="card-desc">
+              Select a track from the library. Followers who join will download it to temporary
+              cache and listen in sync.
             </p>
 
-            <div
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '8px',
-                maxHeight: '220px',
-                overflowY: 'auto'
-              }}
-            >
+            <div className="song-list">
               {songs.length === 0 ? (
-                <div style={{ color: '#666', fontSize: '14px', padding: '10px 0' }}>
-                  No songs available. Ensure backend is running.
+                <div
+                  style={{
+                    color: 'var(--text-muted)',
+                    fontSize: '13px',
+                    padding: '24px 0',
+                    textAlign: 'center'
+                  }}
+                >
+                  <p style={{ margin: '0 0 10px' }}>No songs found in catalog.</p>
+                  <button onClick={fetchSongs} className="btn btn-secondary btn-sm">
+                    🔄 Refresh Library
+                  </button>
                 </div>
               ) : (
                 songs.map((song) => {
@@ -366,28 +365,16 @@ function App() {
                     <div
                       key={song.id}
                       onClick={() => setSelectedSongId(song.id)}
-                      style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                        padding: '10px 14px',
-                        borderRadius: '8px',
-                        background: isSelected ? '#1db95422' : '#282828',
-                        border: isSelected ? '1px solid #1db954' : '1px solid transparent',
-                        cursor: 'pointer'
-                      }}
+                      className={`song-item ${isSelected ? 'selected' : ''}`}
                     >
-                      <div>
-                        <div
-                          style={{ fontWeight: isSelected ? 'bold' : 'normal', fontSize: '14px' }}
-                        >
-                          {song.title}
+                      <div className="song-info">
+                        <span className="song-icon">{isSelected ? '▶' : '🎵'}</span>
+                        <div>
+                          <div className="song-title">{song.title}</div>
+                          <div className="song-artist">{song.artist}</div>
                         </div>
-                        <div style={{ fontSize: '12px', color: '#888' }}>{song.artist}</div>
                       </div>
-                      <span style={{ fontSize: '12px', color: '#aaa' }}>
-                        {formatDuration(song.duration)}
-                      </span>
+                      <span className="song-duration">{formatDuration(song.duration)}</span>
                     </div>
                   )
                 })
@@ -397,291 +384,157 @@ function App() {
             <button
               onClick={handleCreateRoom}
               disabled={songs.length === 0}
-              style={{
-                width: '100%',
-                marginTop: '15px',
-                padding: '12px',
-                fontSize: '15px',
-                fontWeight: 'bold',
-                borderRadius: '8px',
-                border: 'none',
-                background: '#1db954',
-                color: '#fff',
-                cursor: 'pointer',
-                opacity: songs.length === 0 ? 0.5 : 1
-              }}
+              className="btn btn-primary"
+              style={{ marginTop: '18px' }}
             >
               🚀 Create Room & Host
             </button>
-          </div>
+          </section>
 
-          {/* Card B: Join Existing Room */}
-          <div
-            style={{
-              background: '#1e1e1e',
-              padding: '25px',
-              borderRadius: '12px',
-              border: '1px solid #2a2a2a',
-              display: 'flex',
-              flexDirection: 'column',
-              justifyContent: 'space-between'
-            }}
-          >
+          {/* Card 2: Join Existing Room */}
+          <section className="dark-card" style={{ justifyContent: 'space-between' }}>
             <div>
-              <h2 style={{ marginTop: 0, fontSize: '20px' }}>2. Join an Existing Room</h2>
-              <p style={{ color: '#aaa', fontSize: '13px', marginBottom: '20px' }}>
+              <div className="card-title-row">
+                <span style={{ fontSize: '20px' }}>👥</span>
+                <h2 className="card-title">Join a Room</h2>
+              </div>
+              <p className="card-desc">
                 Enter the room code shared by the host to join their synchronized session.
               </p>
 
               <input
                 type="text"
-                placeholder="Enter Code (e.g. 15151)"
+                placeholder="Enter 5-digit code..."
                 value={roomCode}
+                maxLength={10}
                 onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
                 onKeyDown={(e) => e.key === 'Enter' && handleJoin()}
-                style={{
-                  width: '100%',
-                  padding: '12px',
-                  fontSize: '16px',
-                  borderRadius: '8px',
-                  border: '1px solid #333',
-                  background: '#2a2a2a',
-                  color: '#fff',
-                  outline: 'none',
-                  boxSizing: 'border-box',
-                  marginBottom: '15px'
-                }}
+                className="input-code"
               />
+
+              <button onClick={handleJoin} className="btn btn-secondary" style={{ width: '100%' }}>
+                Join Session
+              </button>
             </div>
 
-            <button
-              onClick={handleJoin}
-              style={{
-                width: '100%',
-                padding: '12px',
-                fontSize: '15px',
-                fontWeight: 'bold',
-                borderRadius: '8px',
-                border: 'none',
-                background: '#333',
-                color: '#fff',
-                cursor: 'pointer'
-              }}
-            >
-              Join Room
-            </button>
-          </div>
-        </div>
+            {/* Quick feature highlights */}
+            <div className="feature-box">
+              <div className="feature-item">
+                <span className="feature-bullet">⚡</span>
+                <span>Pre-downloads tracks for zero-lag playback</span>
+              </div>
+              <div className="feature-item">
+                <span className="feature-bullet">🔄</span>
+                <span>Real-time host play/pause/seek sync</span>
+              </div>
+              <div className="feature-item">
+                <span className="feature-bullet">📱</span>
+                <span>Compatible with mobile & desktop clients</span>
+              </div>
+            </div>
+          </section>
+        </main>
       ) : (
-        /* In-Room View */
-        <div style={{ marginTop: '30px', maxWidth: '680px' }}>
-          <div
-            style={{
-              padding: '25px',
-              background: '#1e1e1e',
-              borderRadius: '12px',
-              border: '1px solid #2a2a2a'
-            }}
-          >
-            {/* Room Header */}
-            <div
-              style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                marginBottom: '15px'
-              }}
-            >
+        /* In-Room Active Session View */
+        <main className="room-container">
+          {/* Room Header Bar */}
+          <div className="room-bar">
+            <div className="room-code-tag">
               <div>
-                <span style={{ fontSize: '12px', color: '#888', textTransform: 'uppercase' }}>
-                  Room Code
-                </span>
-                <h2 style={{ margin: 0, fontSize: '24px', letterSpacing: '1px' }}>
-                  {roomCode.toUpperCase()}
-                </h2>
+                <div className="room-code-label">Room Code</div>
+                <div className="room-code-val">{roomCode.toUpperCase()}</div>
               </div>
-              <div style={{ display: 'flex', gap: '10px' }}>
-                {isHost && (
-                  <button
-                    onClick={() => setShowSongPicker(!showSongPicker)}
-                    style={{
-                      padding: '8px 14px',
-                      background: '#282828',
-                      color: '#fff',
-                      border: '1px solid #444',
-                      borderRadius: '6px',
-                      cursor: 'pointer',
-                      fontSize: '13px'
-                    }}
-                  >
-                    🎶 Change Song
-                  </button>
-                )}
-                <button
-                  onClick={handleLeave}
-                  style={{
-                    padding: '8px 14px',
-                    background: '#ff444422',
-                    color: '#ff6b6b',
-                    border: '1px solid #ff4444',
-                    borderRadius: '6px',
-                    cursor: 'pointer',
-                    fontSize: '13px'
-                  }}
-                >
-                  Leave Room
-                </button>
-              </div>
+              <button onClick={handleCopyCode} className="copy-btn">
+                {copied ? '✓ Copied' : '📋 Copy'}
+              </button>
             </div>
 
-            {/* Change Song Modal / Panel (Host only) */}
-            {isHost && showSongPicker && (
-              <div
-                style={{
-                  marginBottom: '20px',
-                  padding: '15px',
-                  background: '#252525',
-                  borderRadius: '8px',
-                  border: '1px solid #333'
-                }}
-              >
-                <div style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '10px' }}>
-                  Select a new song for the room:
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                  {songs.map((song) => (
+            <div style={{ display: 'flex', gap: '10px' }}>
+              {isHost && (
+                <button
+                  onClick={() => setShowSongPicker(!showSongPicker)}
+                  className="btn btn-secondary btn-sm"
+                >
+                  🎶 Change Song
+                </button>
+              )}
+              <button onClick={handleLeave} className="btn btn-danger btn-sm">
+                Leave Room
+              </button>
+            </div>
+          </div>
+
+          {/* Host Change Song Modal / Panel */}
+          {isHost && showSongPicker && (
+            <div className="picker-panel">
+              <div className="picker-title">Select a new song for the room:</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                {songs.map((song) => {
+                  const isCurrent = currentSong?.id === song.id
+                  return (
                     <div
                       key={song.id}
                       onClick={() => handleChangeSong(song.id)}
-                      style={{
-                        padding: '8px 12px',
-                        borderRadius: '6px',
-                        background: currentSong?.id === song.id ? '#1db95422' : '#303030',
-                        border: currentSong?.id === song.id ? '1px solid #1db954' : 'none',
-                        cursor: 'pointer',
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        fontSize: '13px'
-                      }}
+                      className={`song-item ${isCurrent ? 'selected' : ''}`}
                     >
-                      <span>
-                        {song.title} — <span style={{ color: '#888' }}>{song.artist}</span>
-                      </span>
-                      <span style={{ color: '#aaa' }}>{formatDuration(song.duration)}</span>
+                      <div className="song-info">
+                        <span className="song-icon">{isCurrent ? '▶' : '🎵'}</span>
+                        <div>
+                          <span className="song-title">{song.title}</span> —{' '}
+                          <span className="song-artist">{song.artist}</span>
+                        </div>
+                      </div>
+                      <span className="song-duration">{formatDuration(song.duration)}</span>
                     </div>
-                  ))}
-                </div>
+                  )
+                })}
               </div>
-            )}
+            </div>
+          )}
 
-            {/* Current Song Details Card */}
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '15px',
-                padding: '15px',
-                background: '#252525',
-                borderRadius: '8px',
-                marginBottom: '15px'
-              }}
-            >
-              <div
-                style={{
-                  width: '56px',
-                  height: '56px',
-                  borderRadius: '6px',
-                  background: '#333',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontSize: '24px'
-                }}
-              >
-                🎵
-              </div>
-              <div style={{ flex: 1 }}>
-                <h3 style={{ margin: 0, fontSize: '18px', color: '#fff' }}>
-                  {currentSong ? currentSong.title : 'Loading song...'}
-                </h3>
-                <p style={{ margin: '3px 0 0 0', fontSize: '13px', color: '#aaa' }}>
+          {/* Main Player Display Card */}
+          <div className="player-main-card">
+            <div className="track-hero">
+              <div className="album-art-fallback">🎵</div>
+              <div className="track-meta">
+                <h2>{currentSong ? currentSong.title : 'Loading song...'}</h2>
+                <p className="track-artist-duration">
                   {currentSong
                     ? `${currentSong.artist} • ${formatDuration(currentSong.duration)}`
-                    : 'Waiting for host...'}
+                    : 'Waiting for room stream...'}
                 </p>
+
+                <div className="badge-row">
+                  <span className={`badge-pill ${isHost ? 'host' : 'follower'}`}>
+                    {isHost ? '★ Host (Master)' : '👥 Follower (Client)'}
+                  </span>
+                  {audioBlobUrl ? (
+                    <span className="badge-pill cached">💾 Cached in RAM</span>
+                  ) : null}
+                </div>
               </div>
             </div>
 
-            {/* Download / Caching Progress Bar */}
+            {/* Download Progress Bar */}
             {isDownloading ? (
-              <div
-                style={{
-                  marginBottom: '15px',
-                  padding: '12px',
-                  background: '#252525',
-                  borderRadius: '8px'
-                }}
-              >
-                <div
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    fontSize: '12px',
-                    color: '#aaa',
-                    marginBottom: '6px'
-                  }}
-                >
-                  <span>⏳ Pre-downloading track for zero-lag sync...</span>
+              <div className="download-card">
+                <div className="download-labels">
+                  <span>⏳ Pre-downloading track for synchronized playback...</span>
                   <span>{downloadProgress}%</span>
                 </div>
-                <div
-                  style={{
-                    width: '100%',
-                    height: '6px',
-                    background: '#333',
-                    borderRadius: '3px',
-                    overflow: 'hidden'
-                  }}
-                >
-                  <div
-                    style={{
-                      width: `${downloadProgress}%`,
-                      height: '100%',
-                      background: '#1db954',
-                      transition: 'width 0.2s ease'
-                    }}
-                  />
+                <div className="progress-track">
+                  <div className="progress-fill" style={{ width: `${downloadProgress}%` }} />
                 </div>
               </div>
             ) : null}
 
-            {/* Role & Status Label */}
-            <p
-              style={{
-                margin: '0 0 15px 0',
-                fontSize: '14px',
-                color: isHost ? '#1db954' : '#b3b3b3',
-                fontWeight: '500'
-              }}
-            >
-              {isHost
-                ? '★ You are the host. Your playback controls the room.'
-                : hostLeft
-                  ? '⚠️ The host left the room. This session has ended.'
-                  : '👥 Following the host. Audio is synced from temporary local cache.'}
-            </p>
-
-            {/* Audio Player (Host controls / Follower synchronized) */}
-            {audioBlobUrl ? (
+            {/* Host Audio Controller */}
+            {audioBlobUrl && isHost && !isDownloading ? (
               <audio
                 ref={audioRef}
                 src={audioBlobUrl}
-                controls={isHost && !isDownloading}
-                style={{
-                  width: '100%',
-                  marginTop: '10px',
-                  display: isHost && !isDownloading ? 'block' : 'none'
-                }}
+                controls
+                className="audio-player-element"
                 onPlay={() => sendAudioAction('play')}
                 onPause={() => sendAudioAction('pause')}
                 onSeeked={() => sendAudioAction('seek')}
@@ -690,25 +543,19 @@ function App() {
               </audio>
             ) : null}
 
+            {/* Follower Synchronized View */}
             {!isHost && !isDownloading && (
-              <div
-                style={{
-                  marginTop: '15px',
-                  padding: '15px',
-                  background: '#252525',
-                  borderRadius: '8px',
-                  textAlign: 'center',
-                  color: '#aaa',
-                  fontSize: '14px'
-                }}
-              >
-                {hostLeft
-                  ? 'Session ended. Click "Leave Room" to join another room.'
-                  : 'Audio is downloaded in temp cache and playing in sync with the host.'}
+              <div className="follower-state-box">
+                <span className="sync-wave-dot" />
+                <span>
+                  {hostLeft
+                    ? '⚠️ The host has left the room. Session ended.'
+                    : 'Audio synchronized with host • Playing from local temporary memory'}
+                </span>
               </div>
             )}
           </div>
-        </div>
+        </main>
       )}
     </div>
   )
