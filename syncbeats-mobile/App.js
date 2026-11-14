@@ -16,11 +16,10 @@ import Constants from 'expo-constants';
 import * as Network from 'expo-network';
 import io from 'socket.io-client';
 
-// Automatically detect host IP from Metro / Expo bundler during development
-const getDetectedServerUrl = () => {
-  if (process.env.EXPO_PUBLIC_SERVER_URL) {
-    return process.env.EXPO_PUBLIC_SERVER_URL;
-  }
+const SAVED_SERVER_FILE = FileSystem.documentDirectory + 'syncbeats_server.json';
+const CACHED_TRACK_PATH = FileSystem.cacheDirectory + 'syncbeats_current_track.mp3';
+
+const getMetroHostIp = () => {
   const hostUri =
     Constants.expoConfig?.hostUri ||
     Constants.manifest2?.extra?.expoGo?.debuggerHost ||
@@ -28,13 +27,22 @@ const getDetectedServerUrl = () => {
   if (hostUri) {
     const ip = hostUri.split(':')[0];
     if (ip && ip !== 'localhost' && ip !== '127.0.0.1') {
-      return `http://${ip}:5000`;
+      return ip;
     }
   }
-  return 'http://192.168.1.13:5000';
+  return null;
 };
 
-const CACHED_TRACK_PATH = FileSystem.cacheDirectory + 'syncbeats_current_track.mp3';
+const getDetectedServerUrl = () => {
+  if (process.env.EXPO_PUBLIC_SERVER_URL) {
+    return process.env.EXPO_PUBLIC_SERVER_URL;
+  }
+  const metroIp = getMetroHostIp();
+  if (metroIp) {
+    return `http://${metroIp}:5000`;
+  }
+  return 'http://192.168.1.16:5000';
+};
 
 export default function App() {
   const [serverUrl, setServerUrl] = useState(getDetectedServerUrl);
@@ -69,8 +77,25 @@ export default function App() {
   const isRemoteEvent = useRef(false);
   const pendingSync = useRef(null);
   const downloadResumableRef = useRef(null);
+  const hasBootScanned = useRef(false);
 
-  // ─── Auto-Detect Server on Local Wi-Fi Subnet ──────────────────────────────
+  const probeHost = async (url, timeoutMs = 1000) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(`${url}/health`, { signal: controller.signal });
+      clearTimeout(timer);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.status === 'ok') return url;
+      }
+    } catch {
+      clearTimeout(timer);
+    }
+    return null;
+  };
+
+  // ─── Auto-Detect Server Across Full Local Wi-Fi Subnet ─────────────────────
   const scanForNearbyServer = useCallback(async () => {
     setIsScanning(true);
     setErrorMessage('');
@@ -79,35 +104,36 @@ export default function App() {
     try {
       const candidates = [];
 
-      // 1. Check Metro host IP from Expo Constants
-      const hostUri =
-        Constants.expoConfig?.hostUri ||
-        Constants.manifest2?.extra?.expoGo?.debuggerHost ||
-        Constants.manifest?.debuggerHost;
-      if (hostUri) {
-        const metroIp = hostUri.split(':')[0];
-        if (metroIp) candidates.push(`http://${metroIp}:5000`);
+      // 1. Check Metro host IP if available (Expo Go dev mode)
+      const metroIp = getMetroHostIp();
+      if (metroIp) candidates.push(`http://${metroIp}:5000`);
+
+      // 2. Check previously saved server URL from persistent storage
+      try {
+        const info = await FileSystem.getInfoAsync(SAVED_SERVER_FILE);
+        if (info.exists) {
+          const saved = JSON.parse(await FileSystem.readAsStringAsync(SAVED_SERVER_FILE));
+          if (saved?.url && !candidates.includes(saved.url)) {
+            candidates.push(saved.url);
+          }
+        }
+      } catch {
+        // Ignore storage read error
       }
 
-      // 2. Add current serverUrl
+      // 3. Check current serverUrl state
       if (serverUrl && !candidates.includes(serverUrl)) {
         candidates.push(serverUrl);
       }
 
-      // 3. Scan phone's local subnet
+      // 4. Scan entire local /24 subnet (1..254)
       try {
         const deviceIp = await Network.getIpAddressAsync();
         if (deviceIp && deviceIp.includes('.')) {
           const parts = deviceIp.split('.');
           const prefix = `${parts[0]}.${parts[1]}.${parts[2]}`;
-          const currentOctet = parseInt(parts[3], 10);
 
-          const octetsToTest = new Set([1, 2, 10, 11, 12, 13, 14, 15, 20, 50, 100, 101]);
-          for (let i = Math.max(1, currentOctet - 15); i <= Math.min(254, currentOctet + 15); i++) {
-            octetsToTest.add(i);
-          }
-
-          for (const octet of octetsToTest) {
+          for (let octet = 1; octet <= 254; octet++) {
             const candidate = `http://${prefix}.${octet}:5000`;
             if (!candidates.includes(candidate)) {
               candidates.push(candidate);
@@ -118,38 +144,23 @@ export default function App() {
         console.log('Could not retrieve local device IP:', netErr);
       }
 
-      const probeHost = async (url) => {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 1200);
-        try {
-          const res = await fetch(`${url}/health`, { signal: controller.signal });
-          clearTimeout(timer);
-          if (res.ok) {
-            const data = await res.json();
-            if (data.status === 'ok') return url;
-          }
-        } catch {
-          // Unreachable candidate
-        }
-        return null;
-      };
-
-      // Probe candidates in parallel batches of 8
-      const batchSize = 8;
+      // Probe candidates in parallel batches of 30
+      const batchSize = 30;
       for (let i = 0; i < candidates.length; i += batchSize) {
         const batch = candidates.slice(i, i + batchSize);
-        const results = await Promise.all(batch.map(probeHost));
+        const results = await Promise.all(batch.map((u) => probeHost(u, 1000)));
         const found = results.find(Boolean);
         if (found) {
           setServerUrl(found);
           setStatusText('Found Server!');
           setIsScanning(false);
+          FileSystem.writeAsStringAsync(SAVED_SERVER_FILE, JSON.stringify({ url: found })).catch(() => { });
           return found;
         }
       }
 
       setStatusText('Not Connected');
-      setErrorMessage('No Syncbeats host found on this Wi-Fi. Check if backend is running.');
+      setErrorMessage('No Syncbeats host found on this Wi-Fi. Check if backend is running & port 5000 is open.');
     } catch {
       setStatusText('Scan Failed');
       setErrorMessage('Network scan failed. Ensure Wi-Fi is enabled.');
@@ -158,6 +169,14 @@ export default function App() {
     }
     return null;
   }, [serverUrl]);
+
+  // Automatically scan on cold boot when running as a standalone APK (no Metro bundler)
+  useEffect(() => {
+    if (!getMetroHostIp() && !hasBootScanned.current) {
+      hasBootScanned.current = true;
+      scanForNearbyServer();
+    }
+  }, [scanForNearbyServer]);
 
   // ─── Fetch song catalog ────────────────────────────────────────────────────
   const fetchSongs = useCallback(async (url) => {
@@ -195,7 +214,7 @@ export default function App() {
         playerRef.current = null;
       }
 
-      // Delete old cache file if present using legacy filesystem API
+      // Delete old cache file if present
       const existing = await FileSystem.getInfoAsync(CACHED_TRACK_PATH);
       if (existing.exists) {
         await FileSystem.deleteAsync(CACHED_TRACK_PATH, { idempotent: true });
@@ -226,9 +245,9 @@ export default function App() {
       await setAudioModeAsync({
         playsInSilentMode: true,
         shouldPlayInBackground: true,
-      }).catch(() => {});
+      }).catch(() => { });
 
-      // Create new modern AudioPlayer from cached local URI
+      // Create AudioPlayer from cached local URI
       const player = createAudioPlayer(result.uri);
       playerRef.current = player;
 
@@ -255,7 +274,7 @@ export default function App() {
         await setAudioModeAsync({
           playsInSilentMode: true,
           shouldPlayInBackground: true,
-        }).catch(() => {});
+        }).catch(() => { });
 
         const player = createAudioPlayer(song.fileUrl);
         playerRef.current = player;
@@ -283,6 +302,7 @@ export default function App() {
     socket.on('connect', () => {
       setStatusText('Connected to Server');
       setErrorMessage('');
+      FileSystem.writeAsStringAsync(SAVED_SERVER_FILE, JSON.stringify({ url: serverUrl })).catch(() => { });
       fetchSongs(serverUrl);
     });
 
@@ -373,8 +393,7 @@ export default function App() {
         playerRef.current = null;
       }
       socket.disconnect();
-      // Clean up cached file on unmount
-      FileSystem.deleteAsync(CACHED_TRACK_PATH, { idempotent: true }).catch(() => {});
+      FileSystem.deleteAsync(CACHED_TRACK_PATH, { idempotent: true }).catch(() => { });
     };
   }, [serverUrl, fetchSongs, downloadAndLoadAudio]);
 
@@ -433,7 +452,7 @@ export default function App() {
       playerRef.current = null;
     }
     socketRef.current?.emit('leave-room', { roomCode: roomCode.trim().toUpperCase() });
-    await FileSystem.deleteAsync(CACHED_TRACK_PATH, { idempotent: true }).catch(() => {});
+    await FileSystem.deleteAsync(CACHED_TRACK_PATH, { idempotent: true }).catch(() => { });
     setCurrentSong(null);
     setJoined(false);
     setIsHost(false);
@@ -721,8 +740,8 @@ export default function App() {
                 {isHost
                   ? '★ You are the host. Your controls sync all listeners.'
                   : hostLeft
-                  ? '⚠️ The host left. Session has ended.'
-                  : '👥 Following the host in real time.'}
+                    ? '⚠️ The host left. Session has ended.'
+                    : '👥 Following the host in real time.'}
               </Text>
 
               {/* Controls */}
@@ -736,8 +755,8 @@ export default function App() {
                     {isDownloading
                       ? 'Downloading track to your device…'
                       : hostLeft
-                      ? 'Session ended. Tap Leave to exit.'
-                      : 'Track downloaded to temp cache. Listening in sync! 🎧'}
+                        ? 'Session ended. Tap Leave to exit.'
+                        : 'Track downloaded to temp cache. Listening in sync! 🎧'}
                   </Text>
                 </View>
               ) : null}
