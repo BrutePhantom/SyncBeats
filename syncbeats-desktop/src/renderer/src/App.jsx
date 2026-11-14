@@ -1,14 +1,16 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import io from 'socket.io-client'
 
-const BACKEND_URL =
-  (typeof process !== 'undefined' && process.env?.VITE_BACKEND_URL) ||
+const DEFAULT_BACKEND_URL =
   import.meta.env.VITE_BACKEND_URL ||
+  localStorage.getItem('syncbeats_server_url') ||
   'http://localhost:5000'
 
-const socket = io(BACKEND_URL)
-
 function App() {
+  const [serverUrl, setServerUrl] = useState(DEFAULT_BACKEND_URL)
+  const [serverInput, setServerInput] = useState(DEFAULT_BACKEND_URL)
+  const socketRef = useRef(null)
+
   const [songs, setSongs] = useState([])
   const [selectedSongId, setSelectedSongId] = useState(null)
   const [currentSong, setCurrentSong] = useState(null)
@@ -30,77 +32,102 @@ function App() {
   const isRemoteEvent = useRef(false)
   const activeBlobUrlRef = useRef('')
 
+  // Rewrite localhost or relative paths from backend to the active LAN serverUrl
+  const resolveAssetUrl = useCallback(
+    (rawUrl) => {
+      if (!rawUrl) return ''
+      try {
+        const parsed = new URL(rawUrl, serverUrl)
+        if (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1') {
+          const base = new URL(serverUrl)
+          parsed.protocol = base.protocol
+          parsed.hostname = base.hostname
+          parsed.port = base.port
+        }
+        return parsed.toString()
+      } catch {
+        return `${serverUrl}${rawUrl.startsWith('/') ? '' : '/'}${rawUrl}`
+      }
+    },
+    [serverUrl]
+  )
+
   const fetchSongs = useCallback(async () => {
     try {
-      const res = await fetch(`${BACKEND_URL}/api/songs`)
+      const res = await fetch(`${serverUrl}/api/songs`)
       const data = await res.json()
       if (data.success && Array.isArray(data.songs)) {
         setSongs(data.songs)
         setSelectedSongId((prev) => prev || (data.songs[0] ? data.songs[0].id : null))
       }
     } catch {
-      // Backend might still be starting or unreachable
+      // Backend unreachable at current serverUrl
     }
-  }, [])
+  }, [serverUrl])
 
-  // Download track into temporary in-memory Blob URL for zero-lag local playback
-  const downloadAndPrepareAudio = useCallback(async (song) => {
-    if (!song || !song.fileUrl) return
+  const downloadAndPrepareAudio = useCallback(
+    async (song) => {
+      if (!song || !song.fileUrl) return
+      const resolvedUrl = resolveAssetUrl(song.fileUrl)
 
-    try {
-      setIsDownloading(true)
-      setDownloadProgress(10)
+      try {
+        setIsDownloading(true)
+        setDownloadProgress(10)
 
-      if (activeBlobUrlRef.current) {
-        URL.revokeObjectURL(activeBlobUrlRef.current)
-        activeBlobUrlRef.current = ''
-        setAudioBlobUrl('')
-      }
-
-      const response = await fetch(song.fileUrl)
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-
-      const contentLength = +(response.headers.get('Content-Length') || 0)
-      const reader = response.body ? response.body.getReader() : null
-
-      let blob
-      if (reader && contentLength) {
-        let received = 0
-        const chunks = []
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-          chunks.push(value)
-          received += value.length
-          setDownloadProgress(Math.min(99, Math.round((received / contentLength) * 100)))
+        if (activeBlobUrlRef.current) {
+          URL.revokeObjectURL(activeBlobUrlRef.current)
+          activeBlobUrlRef.current = ''
+          setAudioBlobUrl('')
         }
-        blob = new Blob(chunks, { type: 'audio/mpeg' })
-      } else {
-        blob = await response.blob()
-      }
 
-      setDownloadProgress(100)
-      const blobUrl = URL.createObjectURL(blob)
-      activeBlobUrlRef.current = blobUrl
-      setAudioBlobUrl(blobUrl)
-      setCurrentSong(song)
-      setIsDownloading(false)
-    } catch (err) {
-      console.warn('Pre-download failed, falling back to direct URL:', err)
-      activeBlobUrlRef.current = song.fileUrl
-      setAudioBlobUrl(song.fileUrl)
-      setCurrentSong(song)
-      setIsDownloading(false)
-    }
-  }, [])
+        const response = await fetch(resolvedUrl)
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+
+        const contentLength = +(response.headers.get('Content-Length') || 0)
+        const reader = response.body ? response.body.getReader() : null
+
+        let blob
+        if (reader && contentLength) {
+          let received = 0
+          const chunks = []
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+            chunks.push(value)
+            received += value.length
+            setDownloadProgress(Math.min(99, Math.round((received / contentLength) * 100)))
+          }
+          blob = new Blob(chunks, { type: 'audio/mpeg' })
+        } else {
+          blob = await response.blob()
+        }
+
+        setDownloadProgress(100)
+        const blobUrl = URL.createObjectURL(blob)
+        activeBlobUrlRef.current = blobUrl
+        setAudioBlobUrl(blobUrl)
+        setCurrentSong(song)
+        setIsDownloading(false)
+      } catch (err) {
+        console.warn('Pre-download failed, falling back to direct URL:', err)
+        activeBlobUrlRef.current = resolvedUrl
+        setAudioBlobUrl(resolvedUrl)
+        setCurrentSong(song)
+        setIsDownloading(false)
+      }
+    },
+    [resolveAssetUrl]
+  )
 
   useEffect(() => {
-    const timer = setTimeout(() => {
-      fetchSongs()
-    }, 0)
+    setStatusText('Connecting...')
+    const socket = io(serverUrl, { transports: ['websocket', 'polling'] })
+    socketRef.current = socket
+
+    fetchSongs()
 
     socket.on('connect', () => {
-      setStatusText('Connected to Server')
+      setStatusText(`Connected (${serverUrl})`)
       setErrorMessage('')
       fetchSongs()
     })
@@ -110,19 +137,12 @@ function App() {
     })
 
     socket.on('connect_error', () => {
-      setStatusText('Connection error (Check backend)')
+      setStatusText('Connection error (Check Host IP)')
     })
 
-    socket.on('songs-updated', () => {
-      fetchSongs()
-    })
+    socket.on('songs-updated', () => fetchSongs())
+    socket.on('room-song', (song) => downloadAndPrepareAudio(song))
 
-    // Receive song info from the room
-    socket.on('room-song', (song) => {
-      downloadAndPrepareAudio(song)
-    })
-
-    // Handle song changed by host
     socket.on('song-changed', ({ song, currentTime }) => {
       if (audioRef.current) {
         audioRef.current.pause()
@@ -132,15 +152,13 @@ function App() {
       setShowSongPicker(false)
     })
 
-    // Receive play/pause/seek events from host
     socket.on('sync-action', ({ action, currentTime }) => {
       if (!audioRef.current) return
       isRemoteEvent.current = true
-
       audioRef.current.currentTime = currentTime
 
       if (action === 'play') {
-        audioRef.current.play().catch(() => {})
+        audioRef.current.play().catch(() => { })
       } else if (action === 'pause') {
         audioRef.current.pause()
       }
@@ -150,12 +168,11 @@ function App() {
       }, 250)
     })
 
-    // Catch up late joiners
     socket.on('sync-state', ({ action, currentTime }) => {
       if (!audioRef.current) return
       audioRef.current.currentTime = currentTime
       if (action === 'play') {
-        audioRef.current.play().catch(() => {})
+        audioRef.current.play().catch(() => { })
       }
     })
 
@@ -175,39 +192,30 @@ function App() {
       }, 250)
     })
 
-    socket.on('room-error', ({ message }) => {
-      setErrorMessage(message)
-    })
-
-    socket.on('control-denied', ({ message }) => {
-      setErrorMessage(message)
-    })
+    socket.on('room-error', ({ message }) => setErrorMessage(message))
+    socket.on('control-denied', ({ message }) => setErrorMessage(message))
 
     return () => {
-      clearTimeout(timer)
-      socket.off('connect')
-      socket.off('disconnect')
-      socket.off('connect_error')
-      socket.off('songs-updated')
-      socket.off('room-song')
-      socket.off('song-changed')
-      socket.off('sync-action')
-      socket.off('sync-state')
-      socket.off('room-role')
-      socket.off('host-left')
-      socket.off('room-error')
-      socket.off('control-denied')
-      if (activeBlobUrlRef.current) {
-        URL.revokeObjectURL(activeBlobUrlRef.current)
-      }
+      socket.disconnect()
     }
-  }, [fetchSongs, downloadAndPrepareAudio])
+  }, [serverUrl, fetchSongs, downloadAndPrepareAudio])
 
-  // Host creates room with selected song
+  const handleSaveServerUrl = (e) => {
+    e.preventDefault()
+    let formatted = serverInput.trim().replace(/\/+$/, '')
+    if (!formatted) return
+    if (!/^https?:\/\//i.test(formatted)) {
+      formatted = `http://${formatted}`
+    }
+    localStorage.setItem('syncbeats_server_url', formatted)
+    setServerInput(formatted)
+    setServerUrl(formatted)
+  }
+
   const handleCreateRoom = async () => {
     try {
       setErrorMessage('')
-      const res = await fetch(`${BACKEND_URL}/api/create-room`, {
+      const res = await fetch(`${serverUrl}/api/create-room`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ songId: selectedSongId })
@@ -221,17 +229,16 @@ function App() {
         if (data.room.currentSong) {
           downloadAndPrepareAudio(data.room.currentSong)
         }
-        socket.emit('join-room', { roomCode: newCode })
+        socketRef.current?.emit('join-room', { roomCode: newCode })
         setJoined(true)
       } else {
         setErrorMessage(data.error || 'Failed to create room.')
       }
     } catch {
-      setErrorMessage('Cannot reach backend server to create room.')
+      setErrorMessage(`Cannot reach backend at ${serverUrl}`)
     }
   }
 
-  // Join existing room
   const handleJoin = () => {
     const cleanCode = roomCode.trim().toUpperCase()
     if (!cleanCode) {
@@ -241,16 +248,13 @@ function App() {
     setErrorMessage('')
     setIsHost(false)
     setHostLeft(false)
-    socket.emit('join-room', { roomCode: cleanCode })
+    socketRef.current?.emit('join-room', { roomCode: cleanCode })
     setJoined(true)
   }
 
-  // Leave room & clean up local cache
   const handleLeave = () => {
-    if (audioRef.current) {
-      audioRef.current.pause()
-    }
-    socket.emit('leave-room', { roomCode: roomCode.toUpperCase() })
+    audioRef.current?.pause()
+    socketRef.current?.emit('leave-room', { roomCode: roomCode.toUpperCase() })
     if (activeBlobUrlRef.current) {
       URL.revokeObjectURL(activeBlobUrlRef.current)
       activeBlobUrlRef.current = ''
@@ -263,10 +267,9 @@ function App() {
     setErrorMessage('')
   }
 
-  // Host changes song during an active session
   const handleChangeSong = (songId) => {
     if (!isHost) return
-    socket.emit('change-song', {
+    socketRef.current?.emit('change-song', {
       roomCode: roomCode.toUpperCase(),
       songId
     })
@@ -281,7 +284,7 @@ function App() {
 
   const sendAudioAction = (action) => {
     if (!isHost || isRemoteEvent.current || !audioRef.current) return
-    socket.emit('audio-action', {
+    socketRef.current?.emit('audio-action', {
       roomCode: roomCode.toUpperCase(),
       action,
       currentTime: audioRef.current.currentTime
@@ -309,9 +312,34 @@ function App() {
           </div>
         </div>
 
-        <div className={`status-badge ${isConnected ? 'connected' : 'disconnected'}`}>
-          <span className="status-dot" />
-          <span>{statusText}</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+          {!joined && (
+            <form onSubmit={handleSaveServerUrl} style={{ display: 'flex', gap: '6px' }}>
+              <input
+                type="text"
+                value={serverInput}
+                onChange={(e) => setServerInput(e.target.value)}
+                placeholder="http://192.168.1.x:5000"
+                style={{
+                  padding: '6px 10px',
+                  borderRadius: '6px',
+                  border: '1px solid #334155',
+                  background: '#0f172a',
+                  color: '#f8fafc',
+                  fontSize: '12px',
+                  width: '190px'
+                }}
+              />
+              <button type="submit" className="btn btn-secondary btn-sm">
+                Connect
+              </button>
+            </form>
+          )}
+
+          <div className={`status-badge ${isConnected ? 'connected' : 'disconnected'}`}>
+            <span className="status-dot" />
+            <span>{statusText}</span>
+          </div>
         </div>
       </header>
 
@@ -335,9 +363,8 @@ function App() {
       ) : null}
 
       {!joined ? (
-        /* Lobby View */
+        /* Lobby View (unchanged) */
         <main className="lobby-grid">
-          {/* Card 1: Host a Session */}
           <section className="dark-card">
             <div className="card-title-row">
               <span style={{ fontSize: '20px' }}>🎶</span>
@@ -396,7 +423,6 @@ function App() {
             </button>
           </section>
 
-          {/* Card 2: Join Existing Room */}
           <section className="dark-card" style={{ justifyContent: 'space-between' }}>
             <div>
               <div className="card-title-row">
@@ -422,7 +448,6 @@ function App() {
               </button>
             </div>
 
-            {/* Quick feature highlights */}
             <div className="feature-box">
               <div className="feature-item">
                 <span className="feature-bullet">⚡</span>
@@ -442,7 +467,6 @@ function App() {
       ) : (
         /* In-Room Active Session View */
         <main className="room-container">
-          {/* Room Header Bar */}
           <div className="room-bar">
             <div className="room-code-tag">
               <div>
@@ -469,7 +493,6 @@ function App() {
             </div>
           </div>
 
-          {/* Host Change Song Modal / Panel */}
           {isHost && showSongPicker && (
             <div className="picker-panel">
               <div className="picker-title">Select a new song for the room:</div>
@@ -497,7 +520,6 @@ function App() {
             </div>
           )}
 
-          {/* Main Player Display Card */}
           <div className="player-main-card">
             <div className="track-hero">
               <div className="album-art-fallback">🎵</div>
@@ -520,7 +542,6 @@ function App() {
               </div>
             </div>
 
-            {/* Download Progress Bar */}
             {isDownloading ? (
               <div className="download-card">
                 <div className="download-labels">
@@ -533,12 +554,13 @@ function App() {
               </div>
             ) : null}
 
-            {/* Host Audio Controller */}
-            {audioBlobUrl && isHost && !isDownloading ? (
+            {/* Mounted for BOTH host (with controls) and follower (hidden so sync-action plays audio) */}
+            {audioBlobUrl && !isDownloading ? (
               <audio
                 ref={audioRef}
                 src={audioBlobUrl}
-                controls
+                controls={isHost}
+                style={isHost ? undefined : { display: 'none' }}
                 className="audio-player-element"
                 onPlay={() => sendAudioAction('play')}
                 onPause={() => sendAudioAction('pause')}
@@ -548,7 +570,6 @@ function App() {
               </audio>
             ) : null}
 
-            {/* Follower Synchronized View */}
             {!isHost && !isDownloading && (
               <div className="follower-state-box">
                 <span className="sync-wave-dot" />
