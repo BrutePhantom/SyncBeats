@@ -1,0 +1,27 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+model Song {
+  id        String   @id @default(uuid())
+  title     String
+  artist    String
+  duration  Float
+  fileUrl   String
+  coverUrl  String?
+  createdAt DateTime @default(now())
+  rooms     Room[]
+}
+
+model Room {
+  id            String   @id @default(uuid())
+  code          String   @unique
+  currentSongId String?
+  currentSong   Song?    @relation(fields: [currentSongId], references: [id])
+  createdAt     DateTime @default(now())
+}
