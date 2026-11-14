@@ -31,6 +31,11 @@ const roomStates = {};
 const roomHosts = {};
 const roomSongs = {};
 
+function emitRoomPresence(roomCode) {
+    const listenerCount = io.sockets.adapter.rooms.get(roomCode)?.size || 0;
+    io.to(roomCode).emit('room-presence', { listenerCount });
+}
+
 // ─── Helpers for Song Auto-Sync & Dynamic URLs ──────────────────────────────
 
 function parseSongMetadata(filename) {
@@ -255,6 +260,7 @@ app.post('/api/create-room', async (req, res) => {
 
 io.on('connection', (socket) => {
     console.log('Client connected:', socket.id);
+    const departedRooms = new Set();
 
     socket.on('join-room', async ({ roomCode }) => {
         const cleanRoomCode = String(roomCode || '').trim().toUpperCase();
@@ -273,6 +279,7 @@ io.on('connection', (socket) => {
 
         const isHost = roomHosts[cleanRoomCode] === socket.id;
         socket.emit('room-role', { isHost });
+        emitRoomPresence(cleanRoomCode);
         console.log(`Socket ${socket.id} joined room ${cleanRoomCode} as ${isHost ? 'host' : 'follower'}`);
 
         // Resolve current song for this room
@@ -371,6 +378,7 @@ io.on('connection', (socket) => {
         if (!cleanRoomCode) return;
 
         socket.leave(cleanRoomCode);
+        emitRoomPresence(cleanRoomCode);
 
         if (roomHosts[cleanRoomCode] === socket.id) {
             delete roomHosts[cleanRoomCode];
@@ -382,7 +390,11 @@ io.on('connection', (socket) => {
 
     socket.on('disconnecting', () => {
         socket.rooms.forEach((roomCode) => {
-            if (roomCode !== socket.id && roomHosts[roomCode] === socket.id) {
+            if (roomCode === socket.id) return;
+
+            departedRooms.add(roomCode);
+
+            if (roomHosts[roomCode] === socket.id) {
                 delete roomHosts[roomCode];
                 delete roomStates[roomCode];
                 delete roomSongs[roomCode];
@@ -392,6 +404,7 @@ io.on('connection', (socket) => {
     });
 
     socket.on('disconnect', () => {
+        departedRooms.forEach(emitRoomPresence);
         console.log('Client disconnected:', socket.id);
     });
 });
