@@ -113,6 +113,10 @@ function App() {
       setStatusText('Connection error (Check backend)')
     })
 
+    socket.on('songs-updated', () => {
+      fetchSongs()
+    })
+
     // Receive song info from the room
     socket.on('room-song', (song) => {
       downloadAndPrepareAudio(song)
@@ -184,6 +188,7 @@ function App() {
       socket.off('connect')
       socket.off('disconnect')
       socket.off('connect_error')
+      socket.off('songs-updated')
       socket.off('room-song')
       socket.off('song-changed')
       socket.off('sync-action')
