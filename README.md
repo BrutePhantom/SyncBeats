@@ -2,11 +2,6 @@
 
 Syncbeats is a cross-platform synchronization and playback system comprising a backend service, desktop client, and mobile client.
 
-# Rules
-
-- DO NOT HARDCODE ANY refrence based key like IP or PORT or anything please . just use process.env
-- Refer to change logs before making any changes.
-- Try code localy, then push to main (or make your own exprimental branch)
 
 ## Repository Structure
 
