@@ -1,15 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import io from 'socket.io-client'
 
-const DEFAULT_BACKEND_URL =
-  import.meta.env.VITE_BACKEND_URL ||
-  localStorage.getItem('syncbeats_server_url') ||
-  'http://localhost:5000'
-
 function App() {
-  const [serverUrl, setServerUrl] = useState(DEFAULT_BACKEND_URL)
-  const [serverInput, setServerInput] = useState(DEFAULT_BACKEND_URL)
-  const socketRef = useRef(null)
+  const [serverUrl, setServerUrl] = useState(
+    () => localStorage.getItem('syncbeats_server_url') || 'http://localhost:5000'
+  )
+  const [serverInput, setServerInput] = useState('')
+  const [isScanning, setIsScanning] = useState(false)
+  const [showManualIp, setShowManualIp] = useState(false)
 
   const [songs, setSongs] = useState([])
   const [selectedSongId, setSelectedSongId] = useState(null)
@@ -31,6 +29,115 @@ function App() {
   const audioRef = useRef(null)
   const isRemoteEvent = useRef(false)
   const activeBlobUrlRef = useRef('')
+  const socketRef = useRef(null)
+
+  // Helper to test if a given server URL responds to /health
+  const probeUrl = useCallback(async (url, timeoutMs = 1200) => {
+    try {
+      const ctrl = new AbortController()
+      const tid = setTimeout(() => ctrl.abort(), timeoutMs)
+      const res = await fetch(`${url}/health`, { signal: ctrl.signal })
+      clearTimeout(tid)
+      if (res.ok) {
+        const data = await res.json()
+        if (data.status === 'ok') return url
+      }
+    } catch {
+      // Unreachable
+    }
+    return null
+  }, [])
+
+  // Auto-detect nearby Syncbeats host on the local network
+  const scanForNearbyServer = useCallback(async () => {
+    setIsScanning(true)
+    setErrorMessage('')
+    setStatusText('Scanning LAN...')
+
+    try {
+      // 1. First attempt fast Node-based scan in Electron main process
+      if (window.api?.scanServers) {
+        const found = await window.api.scanServers()
+        if (found) {
+          localStorage.setItem('syncbeats_server_url', found)
+          setServerUrl(found)
+          setStatusText(`Connected (${found})`)
+          setIsScanning(false)
+          return found
+        }
+      }
+
+      // 2. Fallback in-renderer scan: collect candidate IPs from Electron preload or common prefixes
+      const candidates = ['http://localhost:5000']
+      try {
+        const ips = await window.api?.getLocalIps?.()
+        if (Array.isArray(ips)) {
+          for (const ip of ips) {
+            const parts = ip.split('.')
+            if (parts.length === 4) {
+              const prefix = `${parts[0]}.${parts[1]}.${parts[2]}`
+              for (let i = 1; i <= 254; i++) {
+                const candidate = `http://${prefix}.${i}:5000`
+                if (!candidates.includes(candidate)) candidates.push(candidate)
+              }
+            }
+          }
+        }
+      } catch {
+        // Ignore IPC error
+      }
+
+      // Probe in parallel batches
+      const BATCH = 15
+      for (let i = 0; i < candidates.length; i += BATCH) {
+        const batch = candidates.slice(i, i + BATCH)
+        const results = await Promise.all(batch.map((u) => probeUrl(u, 900)))
+        const found = results.find(Boolean)
+        if (found) {
+          localStorage.setItem('syncbeats_server_url', found)
+          setServerUrl(found)
+          setStatusText(`Connected (${found})`)
+          setIsScanning(false)
+          return found
+        }
+      }
+
+      setStatusText('Not Connected')
+      setErrorMessage(
+        'No Syncbeats server found on this network. Please ensure the host backend is running and connected to the same Wi-Fi, or enter the host IP manually.'
+      )
+    } catch {
+      setStatusText('Scan Failed')
+      setErrorMessage('Network scan failed. Enter host IP manually.')
+    } finally {
+      setIsScanning(false)
+    }
+    return null
+  }, [probeUrl])
+
+  // On initial mount: test saved URL or automatically scan LAN
+  useEffect(() => {
+    let active = true
+
+    const bootstrapConnection = async () => {
+      const saved = localStorage.getItem('syncbeats_server_url')
+      if (saved) {
+        const ok = await probeUrl(saved, 1000)
+        if (ok && active) {
+          setServerUrl(saved)
+          return
+        }
+      }
+      if (active) {
+        await scanForNearbyServer()
+      }
+    }
+
+    bootstrapConnection()
+    return () => {
+      active = false
+    }
+  }, [probeUrl, scanForNearbyServer])
 
   // Rewrite localhost or relative paths from backend to the active LAN serverUrl
   const resolveAssetUrl = useCallback(
@@ -52,18 +159,23 @@ function App() {
     [serverUrl]
   )
 
-  const fetchSongs = useCallback(async () => {
-    try {
-      const res = await fetch(`${serverUrl}/api/songs`)
-      const data = await res.json()
-      if (data.success && Array.isArray(data.songs)) {
-        setSongs(data.songs)
-        setSelectedSongId((prev) => prev || (data.songs[0] ? data.songs[0].id : null))
+  const fetchSongs = useCallback(
+    async (overrideUrl) => {
+      const targetUrl = overrideUrl || serverUrl
+      if (!targetUrl) return
+      try {
+        const res = await fetch(`${targetUrl}/api/songs`)
+        const data = await res.json()
+        if (data.success && Array.isArray(data.songs)) {
+          setSongs(data.songs)
+          setSelectedSongId((prev) => prev || (data.songs[0] ? data.songs[0].id : null))
+        }
+      } catch {
+        // Backend unreachable
       }
-    } catch {
-      // Backend unreachable at current serverUrl
-    }
-  }, [serverUrl])
+    },
+    [serverUrl]
+  )
 
   const downloadAndPrepareAudio = useCallback(
     async (song) => {
@@ -119,17 +231,25 @@ function App() {
     [resolveAssetUrl]
   )
 
+  // Socket.IO lifecycle — automatically connects/reconnects when serverUrl changes
   useEffect(() => {
-    setStatusText('Connecting...')
-    const socket = io(serverUrl, { transports: ['websocket', 'polling'] })
-    socketRef.current = socket
+    if (!serverUrl) return
 
-    fetchSongs()
+    const timer = setTimeout(() => {
+      setStatusText('Connecting...')
+      fetchSongs(serverUrl)
+    }, 0)
+    const socket = io(serverUrl, {
+      transports: ['websocket', 'polling'],
+      timeout: 10000
+    })
+    socketRef.current = socket
 
     socket.on('connect', () => {
       setStatusText(`Connected (${serverUrl})`)
       setErrorMessage('')
-      fetchSongs()
+      localStorage.setItem('syncbeats_server_url', serverUrl)
+      fetchSongs(serverUrl)
     })
 
     socket.on('disconnect', () => {
@@ -140,7 +260,7 @@ function App() {
       setStatusText('Connection error (Check Host IP)')
     })
 
-    socket.on('songs-updated', () => fetchSongs())
+    socket.on('songs-updated', () => fetchSongs(serverUrl))
     socket.on('room-song', (song) => downloadAndPrepareAudio(song))
 
     socket.on('song-changed', ({ song, currentTime }) => {
@@ -158,7 +278,7 @@ function App() {
       audioRef.current.currentTime = currentTime
 
       if (action === 'play') {
-        audioRef.current.play().catch(() => { })
+        audioRef.current.play().catch(() => {})
       } else if (action === 'pause') {
         audioRef.current.pause()
       }
@@ -172,7 +292,7 @@ function App() {
       if (!audioRef.current) return
       audioRef.current.currentTime = currentTime
       if (action === 'play') {
-        audioRef.current.play().catch(() => { })
+        audioRef.current.play().catch(() => {})
       }
     })
 
@@ -196,20 +316,25 @@ function App() {
     socket.on('control-denied', ({ message }) => setErrorMessage(message))
 
     return () => {
+      clearTimeout(timer)
       socket.disconnect()
+      if (activeBlobUrlRef.current) {
+        URL.revokeObjectURL(activeBlobUrlRef.current)
+      }
     }
   }, [serverUrl, fetchSongs, downloadAndPrepareAudio])
 
   const handleSaveServerUrl = (e) => {
-    e.preventDefault()
+    e?.preventDefault()
     let formatted = serverInput.trim().replace(/\/+$/, '')
     if (!formatted) return
     if (!/^https?:\/\//i.test(formatted)) {
       formatted = `http://${formatted}`
     }
     localStorage.setItem('syncbeats_server_url', formatted)
-    setServerInput(formatted)
     setServerUrl(formatted)
+    setShowManualIp(false)
+    setServerInput('')
   }
 
   const handleCreateRoom = async () => {
@@ -312,34 +437,9 @@ function App() {
           </div>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-          {!joined && (
-            <form onSubmit={handleSaveServerUrl} style={{ display: 'flex', gap: '6px' }}>
-              <input
-                type="text"
-                value={serverInput}
-                onChange={(e) => setServerInput(e.target.value)}
-                placeholder="http://192.168.1.x:5000"
-                style={{
-                  padding: '6px 10px',
-                  borderRadius: '6px',
-                  border: '1px solid #334155',
-                  background: '#0f172a',
-                  color: '#f8fafc',
-                  fontSize: '12px',
-                  width: '190px'
-                }}
-              />
-              <button type="submit" className="btn btn-secondary btn-sm">
-                Connect
-              </button>
-            </form>
-          )}
-
-          <div className={`status-badge ${isConnected ? 'connected' : 'disconnected'}`}>
-            <span className="status-dot" />
-            <span>{statusText}</span>
-          </div>
+        <div className={`status-badge ${isConnected ? 'connected' : 'disconnected'}`}>
+          <span className="status-dot" />
+          <span>{statusText}</span>
         </div>
       </header>
 
@@ -363,8 +463,72 @@ function App() {
       ) : null}
 
       {!joined ? (
-        /* Lobby View (unchanged) */
+        /* Lobby View */
         <main className="lobby-grid">
+          {/* Nearby Host Server Connection Bar */}
+          <div className="server-connection-bar">
+            <div className="server-connection-main">
+              <div className="server-connection-info">
+                <div>
+                  <div className="server-connection-label">
+                    {isScanning ? '⏳ Scanning Local Network...' : '📡 Host Server Connection'}
+                  </div>
+                  <div className="server-connection-url">{serverUrl}</div>
+                </div>
+              </div>
+              <div className="server-connection-actions">
+                <button
+                  className="btn btn-secondary btn-sm"
+                  onClick={scanForNearbyServer}
+                  disabled={isScanning}
+                >
+                  {isScanning ? '⏳ Scanning…' : '🔍 Auto-Detect'}
+                </button>
+                <button
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => {
+                    setShowManualIp(!showManualIp)
+                    setServerInput(serverUrl)
+                  }}
+                  title="Enter server IP manually"
+                >
+                  ✏️ Edit IP
+                </button>
+              </div>
+            </div>
+
+            {showManualIp && (
+              <form onSubmit={handleSaveServerUrl} className="server-manual-input-row">
+                <input
+                  type="text"
+                  placeholder="e.g. http://192.168.1.13:5000"
+                  value={serverInput}
+                  onChange={(e) => setServerInput(e.target.value)}
+                  style={{
+                    flex: 1,
+                    padding: '8px 12px',
+                    borderRadius: '8px',
+                    border: '1px solid var(--border-subtle)',
+                    background: 'var(--bg-app)',
+                    color: 'var(--text-main)',
+                    fontSize: '13px'
+                  }}
+                />
+                <button type="submit" className="btn btn-primary btn-sm">
+                  Connect
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => setShowManualIp(false)}
+                >
+                  Cancel
+                </button>
+              </form>
+            )}
+          </div>
+
+          {/* Card 1: Host a Room */}
           <section className="dark-card">
             <div className="card-title-row">
               <span style={{ fontSize: '20px' }}>🎶</span>
@@ -386,7 +550,7 @@ function App() {
                   }}
                 >
                   <p style={{ margin: '0 0 10px' }}>No songs found in catalog.</p>
-                  <button onClick={fetchSongs} className="btn btn-secondary btn-sm">
+                  <button onClick={() => fetchSongs()} className="btn btn-secondary btn-sm">
                     🔄 Refresh Library
                   </button>
                 </div>
@@ -423,6 +587,7 @@ function App() {
             </button>
           </section>
 
+          {/* Card 2: Join a Room */}
           <section className="dark-card" style={{ justifyContent: 'space-between' }}>
             <div>
               <div className="card-title-row">
