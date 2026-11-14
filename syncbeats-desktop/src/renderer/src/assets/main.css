@@ -630,3 +630,59 @@ body {
   font-weight: 600;
   color: var(--text-main);
 }
+
+/* Server connection bar */
+.server-connection-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 20px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  margin-bottom: 8px;
+}
+
+.server-connection-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.server-connection-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.server-connection-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin-bottom: 2px;
+}
+
+.server-connection-url {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-main);
+  font-family: monospace;
+}
+
+.server-connection-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.server-manual-input-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
+}

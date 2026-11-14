@@ -3,10 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <title>Syncbeats Desktop</title>
-    <!-- https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP -->
+    <!-- Content Security Policy allowing local and LAN HTTP/WS/WSS connections -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' https: http: blob: data:; connect-src 'self' http://localhost:5000 ws://localhost:5000 http://127.0.0.1:5000 ws://127.0.0.1:5000 http: ws:;"
+      content="default-src 'self' 'unsafe-inline' 'unsafe-eval' http: https: ws: wss: data: blob:; connect-src * 'self' http: https: ws: wss: data: blob:; media-src * 'self' http: https: blob: data:;"
     />
   </head>
 
