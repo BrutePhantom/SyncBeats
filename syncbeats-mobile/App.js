@@ -3,6 +3,7 @@ import {
   StyleSheet,
   Text,
   View,
+  Share,
   TextInput,
   TouchableOpacity,
   StatusBar,
@@ -426,11 +427,20 @@ export default function App() {
     }
   };
 
+  const handleShareRoom = async () => {
+    try {
+      await Share.share({
+        message: `Join my SyncBeats listening room!\nRoom Code: ${roomCode}`,
+      });
+    } catch (error) {
+      setErrorMessage('Unable to share room code.');
+    }
+  };
   // ─── Join existing room ────────────────────────────────────────────────────
   const handleJoin = () => {
     const cleanCode = roomCode.trim().toUpperCase();
-    if (!cleanCode) {
-      setErrorMessage('Please enter a room code.');
+    if (cleanCode.length !== 5) {
+      setErrorMessage('Room code must be exactly 5 characters.');
       return;
     }
     setErrorMessage('');
@@ -642,7 +652,11 @@ export default function App() {
                 placeholder="Enter Room Code (e.g. AB1C2)"
                 placeholderTextColor="#555"
                 value={roomCode}
-                onChangeText={setRoomCode}
+                onChangeText={(text) =>
+                  setRoomCode(
+                    text.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 5)
+                  )
+                }
                 autoCapitalize="characters"
                 autoCorrect={false}
               />
@@ -675,6 +689,12 @@ export default function App() {
                       <Text style={{ color: '#fff', fontSize: 12 }}>🎶 Songs</Text>
                     </TouchableOpacity>
                   )}
+                  <TouchableOpacity
+                    style={styles.iconButton}
+                    onPress={handleShareRoom}
+                  >
+                    <Text style={{ color: '#1db954', fontSize: 12 }}>↗ Share</Text>
+                  </TouchableOpacity>
                   <TouchableOpacity style={styles.leaveButton} onPress={handleLeave}>
                     <Text style={styles.leaveButtonText}>Leave</Text>
                   </TouchableOpacity>
