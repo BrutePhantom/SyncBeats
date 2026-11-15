@@ -3,12 +3,15 @@ import {
   StyleSheet,
   Text,
   View,
+  Share,
+  Alert,
   TextInput,
   TouchableOpacity,
   StatusBar,
   ScrollView,
   FlatList,
 } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { createAudioPlayer, setAudioModeAsync } from 'expo-audio';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -426,11 +429,28 @@ export default function App() {
     }
   };
 
+  const handleShareRoom = async () => {
+    try {
+      await Share.share({
+        message: `Join my SyncBeats listening room!\nRoom Code: ${roomCode}`,
+      });
+    } catch (error) {
+      setErrorMessage('Unable to share room code.');
+    }
+  };
+  const handleCopyRoomCode = async () => {
+    try {
+      await Clipboard.setStringAsync(roomCode);
+      Alert.alert('Copied!', 'Room code copied to clipboard.');
+    } catch {
+      setErrorMessage('Unable to copy room code.');
+    }
+  };
   // ─── Join existing room ────────────────────────────────────────────────────
   const handleJoin = () => {
     const cleanCode = roomCode.trim().toUpperCase();
-    if (!cleanCode) {
-      setErrorMessage('Please enter a room code.');
+    if (cleanCode.length !== 5) {
+      setErrorMessage('Room code must be exactly 5 characters.');
       return;
     }
     setErrorMessage('');
@@ -642,13 +662,23 @@ export default function App() {
                 placeholder="Enter Room Code (e.g. AB1C2)"
                 placeholderTextColor="#555"
                 value={roomCode}
-                onChangeText={setRoomCode}
+                onChangeText={(text) =>
+                  setRoomCode(
+                    text.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 5)
+                  )
+                }
                 autoCapitalize="characters"
                 autoCorrect={false}
               />
               <TouchableOpacity
-                style={[styles.button, styles.buttonDark, { marginTop: 4 }]}
+                style={[
+                  styles.button,
+                  styles.buttonDark,
+                  { marginTop: 4 },
+                  roomCode.length !== 5 && { opacity: 0.4 },
+                ]}
                 onPress={handleJoin}
+                disabled={roomCode.length !== 5}
               >
                 <Text style={styles.buttonText}>Join Room</Text>
               </TouchableOpacity>
@@ -675,6 +705,18 @@ export default function App() {
                       <Text style={{ color: '#fff', fontSize: 12 }}>🎶 Songs</Text>
                     </TouchableOpacity>
                   )}
+                  <TouchableOpacity
+                    style={styles.iconButton}
+                    onPress={handleCopyRoomCode}
+                  >
+                    <Text style={{ color: '#1db954', fontSize: 12 }}>Copy</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.iconButton}
+                    onPress={handleShareRoom}
+                  >
+                    <Text style={{ color: '#1db954', fontSize: 12 }}>↗ Share</Text>
+                  </TouchableOpacity>
                   <TouchableOpacity style={styles.leaveButton} onPress={handleLeave}>
                     <Text style={styles.leaveButtonText}>Leave</Text>
                   </TouchableOpacity>

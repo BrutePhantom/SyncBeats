@@ -54,6 +54,21 @@ function promoteNextHost(roomCode, departingSocketId) {
 
     console.log(`[Room ${roomCode}] Host reassigned to socket ${nextHostId}`);
 }
+function broadcastRoomParticipants(roomCode, excludedSocketId = null) {
+    const members = io.sockets.adapter.rooms.get(roomCode);
+
+    if (!members) return;
+
+    const participants = [...members]
+        .filter(socketId => socketId !== excludedSocketId)
+        .map((socketId, index) => ({
+            id: socketId,
+            name: `Listener ${index + 1}`,
+            isHost: roomHosts[roomCode] === socketId
+        }));
+
+    io.to(roomCode).emit('room-participants', participants);
+}
 // ─── Helpers for Song Auto-Sync & Dynamic URLs ──────────────────────────────
 
 function parseSongMetadata(filename) {
@@ -296,6 +311,7 @@ io.on('connection', (socket) => {
 
         const isHost = roomHosts[cleanRoomCode] === socket.id;
         socket.emit('room-role', { isHost });
+        broadcastRoomParticipants(cleanRoomCode);
         console.log(`Socket ${socket.id} joined room ${cleanRoomCode} as ${isHost ? 'host' : 'follower'}`);
 
         // Resolve current song for this room
@@ -356,7 +372,7 @@ io.on('connection', (socket) => {
             await prisma.room.update({
                 where: { code: cleanRoomCode },
                 data: { currentSongId: song.id }
-            }).catch(() => {});
+            }).catch(() => { });
 
             roomSongs[cleanRoomCode] = song;
             roomStates[cleanRoomCode] = { action: 'pause', currentTime: 0, updatedAt: Date.now() };
@@ -399,14 +415,20 @@ io.on('connection', (socket) => {
         if (wasHost) {
             promoteNextHost(cleanRoomCode, socket.id);
         }
+        broadcastRoomParticipants(cleanRoomCode);
 
         console.log(`Socket ${socket.id} left room ${cleanRoomCode}`);
     });
 
     socket.on('disconnecting', () => {
         socket.rooms.forEach((roomCode) => {
-            if (roomCode !== socket.id && roomHosts[roomCode] === socket.id) {
-                promoteNextHost(roomCode, socket.id);
+            if (roomCode !== socket.id) {
+
+                if (roomHosts[roomCode] === socket.id) {
+                    promoteNextHost(roomCode, socket.id);
+                }
+
+                broadcastRoomParticipants(roomCode, socket.id);
             }
         });
     });
@@ -415,7 +437,7 @@ io.on('connection', (socket) => {
     });
 });
 
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5001;
 server.listen(PORT, () => {
     console.log(`Backend server running on http://localhost:${PORT}`);
     console.log(`Songs folder: ${songsDir}`);
