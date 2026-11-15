@@ -64,6 +64,7 @@ export default function App() {
   // Room/session state
   const [roomCode, setRoomCode] = useState('');
   const [joined, setJoined] = useState(false);
+  const [participants, setParticipants] = useState([]);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isHost, setIsHost] = useState(false);
   const [hostLeft, setHostLeft] = useState(false);
@@ -325,6 +326,9 @@ export default function App() {
       setHostLeft(false);
       setErrorMessage('');
     });
+    socket.on('room-participants', (list) => {
+      setParticipants(Array.isArray(list) ? list : []);
+    });
 
     // Backend sends the current room song on join
     socket.on('room-song', (song) => {
@@ -475,6 +479,7 @@ export default function App() {
     await FileSystem.deleteAsync(CACHED_TRACK_PATH, { idempotent: true }).catch(() => { });
     setCurrentSong(null);
     setJoined(false);
+    setParticipants([]);
     setIsHost(false);
     setHostLeft(false);
     setIsPlaying(false);
@@ -723,6 +728,30 @@ export default function App() {
                 </View>
               </View>
 
+              {/* Room Participants */}
+              <View style={styles.participantsCard}>
+                <Text style={styles.sectionTitle}>
+                  Listening together ({participants.length})
+                </Text>
+
+                {participants.map((person) => (
+                  <View key={person.id} style={styles.participantRow}>
+                    <View style={styles.participantAvatar}>
+                      <Text style={{ color: '#fff' }}>♫</Text>
+                    </View>
+
+                    <Text style={styles.participantName}>
+                      {person.name}
+                    </Text>
+
+                    {person.isHost && (
+                      <View style={styles.hostBadge}>
+                        <Text style={styles.hostBadgeText}>HOST</Text>
+                      </View>
+                    )}
+                  </View>
+                ))}
+              </View>
               {/* Host Song Switcher */}
               {isHost && showSongPicker && (
                 <View style={styles.songPickerPanel}>
@@ -964,6 +993,49 @@ const styles = StyleSheet.create({
     borderColor: '#ff4444',
   },
   leaveButtonText: { color: '#ff6b6b', fontSize: 12, fontWeight: '600' },
+  participantsCard: {
+    backgroundColor: '#252525',
+    borderRadius: 10,
+    padding: 14,
+    marginBottom: 14,
+  },
+
+  participantRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+  },
+
+  participantAvatar: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: '#383838',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
+  },
+
+  participantName: {
+    color: '#fff',
+    fontSize: 14,
+    flex: 1,
+  },
+
+  hostBadge: {
+    backgroundColor: '#1db95420',
+    borderWidth: 1,
+    borderColor: '#1db954',
+    borderRadius: 5,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+
+  hostBadgeText: {
+    color: '#1db954',
+    fontSize: 10,
+    fontWeight: 'bold',
+  },
   songPickerPanel: {
     backgroundColor: '#252525',
     borderRadius: 8,
