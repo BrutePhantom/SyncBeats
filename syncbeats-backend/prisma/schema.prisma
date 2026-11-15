@@ -1,3 +1,4 @@
+
 generator client {
   provider = "prisma-client-js"
 }
@@ -19,9 +20,24 @@ model Song {
 }
 
 model Room {
-  id            String   @id @default(uuid())
-  code          String   @unique
+  id            String            @id @default(uuid())
+  code          String            @unique
   currentSongId String?
-  currentSong   Song?    @relation(fields: [currentSongId], references: [id])
-  createdAt     DateTime @default(now())
+  currentSong   Song?             @relation(fields: [currentSongId], references: [id])
+  participants  RoomParticipant[]
+  createdAt     DateTime          @default(now())
+}
+
+model RoomParticipant {
+  id       String   @id @default(uuid())
+  name     String
+  role     String   @default("LISTENER")
+  joinedAt DateTime @default(now())
+  leftAt   DateTime?
+
+  roomId String
+  room   Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  @@index([roomId])
+  @@index([roomId, role])
 }
