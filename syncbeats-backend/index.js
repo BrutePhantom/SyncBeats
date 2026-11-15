@@ -31,6 +31,29 @@ const roomStates = {};
 const roomHosts = {};
 const roomSongs = {};
 
+function promoteNextHost(roomCode, departingSocketId) {
+    const members = io.sockets.adapter.rooms.get(roomCode);
+    const nextHostId = members ? [...members].find(id => id !== departingSocketId) : null;
+
+    if (!nextHostId) {
+        delete roomHosts[roomCode];
+        delete roomStates[roomCode];
+        delete roomSongs[roomCode];
+        return;
+    }
+
+    roomHosts[roomCode] = nextHostId;
+
+    for (const socketId of members) {
+        if (socketId === departingSocketId) continue;
+        const memberSocket = io.sockets.sockets.get(socketId);
+        if (memberSocket) {
+            memberSocket.emit('room-role', { isHost: socketId === nextHostId });
+        }
+    }
+
+    console.log(`[Room ${roomCode}] Host reassigned to socket ${nextHostId}`);
+}
 // ─── Helpers for Song Auto-Sync & Dynamic URLs ──────────────────────────────
 
 function parseSongMetadata(filename) {
@@ -366,31 +389,27 @@ io.on('connection', (socket) => {
         socket.to(cleanRoomCode).emit('sync-action', { action, currentTime });
     });
 
-    socket.on('leave-room', ({ roomCode }) => {
+    socket.on('leave-room', ({ roomCode } = {}) => {
         const cleanRoomCode = String(roomCode || '').trim().toUpperCase();
         if (!cleanRoomCode) return;
 
+        const wasHost = roomHosts[cleanRoomCode] === socket.id;
         socket.leave(cleanRoomCode);
 
-        if (roomHosts[cleanRoomCode] === socket.id) {
-            delete roomHosts[cleanRoomCode];
-            delete roomStates[cleanRoomCode];
-            delete roomSongs[cleanRoomCode];
-            socket.to(cleanRoomCode).emit('host-left');
+        if (wasHost) {
+            promoteNextHost(cleanRoomCode, socket.id);
         }
+
+        console.log(`Socket ${socket.id} left room ${cleanRoomCode}`);
     });
 
     socket.on('disconnecting', () => {
         socket.rooms.forEach((roomCode) => {
             if (roomCode !== socket.id && roomHosts[roomCode] === socket.id) {
-                delete roomHosts[roomCode];
-                delete roomStates[roomCode];
-                delete roomSongs[roomCode];
-                socket.to(roomCode).emit('host-left');
+                promoteNextHost(roomCode, socket.id);
             }
         });
     });
-
     socket.on('disconnect', () => {
         console.log('Client disconnected:', socket.id);
     });
