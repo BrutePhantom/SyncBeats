@@ -661,8 +661,14 @@ export default function App() {
                 autoCorrect={false}
               />
               <TouchableOpacity
-                style={[styles.button, styles.buttonDark, { marginTop: 4 }]}
+                style={[
+                  styles.button,
+                  styles.buttonDark,
+                  { marginTop: 4 },
+                  roomCode.length !== 5 && { opacity: 0.4 },
+                ]}
                 onPress={handleJoin}
+                disabled={roomCode.length !== 5}
               >
                 <Text style={styles.buttonText}>Join Room</Text>
               </TouchableOpacity>
