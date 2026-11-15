@@ -31,6 +31,9 @@ const roomStates = {};
 const roomHosts = {};
 const roomSongs = {};
 
+// Tracks the database participant record associated with each socket
+const socketParticipants = new Map();
+
 function promoteNextHost(roomCode, departingSocketId) {
     const members = io.sockets.adapter.rooms.get(roomCode);
     const nextHostId = members ? [...members].find(id => id !== departingSocketId) : null;
@@ -302,6 +305,17 @@ io.on('connection', (socket) => {
             return;
         }
 
+
+        // Verify that the room exists in the database
+        const dbRoom = await prisma.room.findUnique({
+            where: { code: cleanRoomCode }
+        });
+
+        if (!dbRoom) {
+            socket.emit('room-error', { message: 'Room not found. Check the room code.' });
+            return;
+        }
+
         socket.join(cleanRoomCode);
 
         // The first device in a room becomes its host for this session.
@@ -310,9 +324,36 @@ io.on('connection', (socket) => {
         }
 
         const isHost = roomHosts[cleanRoomCode] === socket.id;
+
+        // Persist participant in SQLite
+        try {
+            const participant = await prisma.roomParticipant.create({
+                data: {
+                    name: socket.handshake.auth?.displayName || (isHost ? 'Host' : 'Listener'),
+                    role: isHost ? 'HOST' : 'LISTENER',
+                    roomId: dbRoom.id
+                }
+            });
+
+            socketParticipants.set(`${socket.id}:${cleanRoomCode}`, participant.id);
+        } catch (err) {
+            console.error('Failed to save room participant:', err);
+
+            socket.leave(cleanRoomCode);
+
+            if (isHost) {
+                delete roomHosts[cleanRoomCode];
+            }
+
+            socket.emit('room-error', { message: 'Could not join room. Please try again.' });
+            return;
+        }
+
         socket.emit('room-role', { isHost });
         broadcastRoomParticipants(cleanRoomCode);
+
         console.log(`Socket ${socket.id} joined room ${cleanRoomCode} as ${isHost ? 'host' : 'follower'}`);
+
 
         // Resolve current song for this room
         let currentSong = roomSongs[cleanRoomCode];
@@ -437,7 +478,7 @@ io.on('connection', (socket) => {
     });
 });
 
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5001;
 server.listen(PORT, () => {
     console.log(`Backend server running on http://localhost:${PORT}`);
     console.log(`Songs folder: ${songsDir}`);
