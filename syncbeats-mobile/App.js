@@ -49,6 +49,7 @@ const getDetectedServerUrl = () => {
 
 export default function App() {
   const [serverUrl, setServerUrl] = useState(getDetectedServerUrl);
+  const [serverInput, setServerInput] = useState('');
   const [isScanning, setIsScanning] = useState(false);
   const [showManualIp, setShowManualIp] = useState(false);
 
@@ -70,6 +71,7 @@ export default function App() {
   const [hostLeft, setHostLeft] = useState(false);
   const [showSongPicker, setShowSongPicker] = useState(false);
   const [showCreateFlow, setShowCreateFlow] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Status & error
   const [statusText, setStatusText] = useState('Connecting...');
@@ -80,8 +82,27 @@ export default function App() {
   const statusSubscriptionRef = useRef(null);
   const isRemoteEvent = useRef(false);
   const pendingSync = useRef(null);
+  const isJoiningRoomRef = useRef(false);
   const downloadResumableRef = useRef(null);
   const hasBootScanned = useRef(false);
+
+  const resolveAssetUrl = useCallback((rawUrl) => {
+    if (!rawUrl) return '';
+    try {
+      const assetUrl = new URL(rawUrl, serverUrl);
+      // A backend can advertise localhost in a song URL, which only points to the
+      // listening device. Keep the active host in that case.
+      if (assetUrl.hostname === 'localhost' || assetUrl.hostname === '127.0.0.1') {
+        const activeServer = new URL(serverUrl);
+        assetUrl.protocol = activeServer.protocol;
+        assetUrl.hostname = activeServer.hostname;
+        assetUrl.port = activeServer.port;
+      }
+      return assetUrl.toString();
+    } catch {
+      return `${serverUrl}${rawUrl.startsWith('/') ? '' : '/'}${rawUrl}`;
+    }
+  }, [serverUrl]);
 
   const probeHost = async (url, timeoutMs = 1000) => {
     const controller = new AbortController();
@@ -201,6 +222,7 @@ export default function App() {
   // ─── Download track into device temp cache ────────────────────────────────
   const downloadAndLoadAudio = useCallback(async (song) => {
     if (!song || !song.fileUrl) return;
+    const assetUrl = resolveAssetUrl(song.fileUrl);
 
     try {
       setIsDownloading(true);
@@ -226,7 +248,7 @@ export default function App() {
 
       // Download with progress callback
       const downloadResumable = FileSystem.createDownloadResumable(
-        song.fileUrl,
+        assetUrl,
         CACHED_TRACK_PATH,
         {},
         (progress) => {
@@ -280,7 +302,7 @@ export default function App() {
           shouldPlayInBackground: true,
         }).catch(() => { });
 
-        const player = createAudioPlayer(song.fileUrl);
+        const player = createAudioPlayer(assetUrl);
         playerRef.current = player;
         const sub = player.addListener('playbackStatusUpdate', (status) => {
           setIsPlaying(status.playing);
@@ -291,7 +313,7 @@ export default function App() {
       }
       setIsDownloading(false);
     }
-  }, []);
+  }, [resolveAssetUrl]);
 
   // ─── Socket setup ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -310,7 +332,14 @@ export default function App() {
       fetchSongs(serverUrl);
     });
 
-    socket.on('disconnect', () => setStatusText('Disconnected'));
+    socket.on('disconnect', () => {
+      setStatusText('Disconnected');
+      if (isJoiningRoomRef.current) {
+        isJoiningRoomRef.current = false;
+        setIsSubmitting(false);
+        setErrorMessage('Connection lost while joining the room. Please try again.');
+      }
+    });
 
     socket.on('connect_error', () => {
       setStatusText('Connection error');
@@ -322,6 +351,9 @@ export default function App() {
     });
 
     socket.on('room-role', ({ isHost: assignedHost }) => {
+      isJoiningRoomRef.current = false;
+      setIsSubmitting(false);
+      setJoined(true);
       setIsHost(assignedHost);
       setHostLeft(false);
       setErrorMessage('');
@@ -386,7 +418,14 @@ export default function App() {
       setHostLeft(true);
     });
 
-    socket.on('room-error', ({ message }) => setErrorMessage(message));
+    socket.on('room-error', ({ message }) => {
+      if (isJoiningRoomRef.current) {
+        isJoiningRoomRef.current = false;
+        setJoined(false);
+      }
+      setIsSubmitting(false);
+      setErrorMessage(message);
+    });
     socket.on('control-denied', ({ message }) => setErrorMessage(message));
 
     return () => {
@@ -406,6 +445,13 @@ export default function App() {
 
   // ─── Host creates room with selected song ─────────────────────────────────
   const handleCreateRoom = async () => {
+    if (isSubmitting) return;
+    if (!socketRef.current?.connected) {
+      setErrorMessage('Connect to the backend before creating a room.');
+      return;
+    }
+
+    setIsSubmitting(true);
     try {
       setErrorMessage('');
       const res = await fetch(`${serverUrl}/api/create-room`, {
@@ -423,12 +469,14 @@ export default function App() {
         if (data.room.currentSong) {
           downloadAndLoadAudio(data.room.currentSong);
         }
+        isJoiningRoomRef.current = true;
         socketRef.current?.emit('join-room', { roomCode: newCode });
-        setJoined(true);
       } else {
+        setIsSubmitting(false);
         setErrorMessage(data.error || 'Failed to create room.');
       }
     } catch {
+      setIsSubmitting(false);
       setErrorMessage('Cannot reach backend server to create room.');
     }
   };
@@ -452,20 +500,42 @@ export default function App() {
   };
   // ─── Join existing room ────────────────────────────────────────────────────
   const handleJoin = () => {
+    if (isSubmitting) return;
     const cleanCode = roomCode.trim().toUpperCase();
     if (cleanCode.length !== 5) {
       setErrorMessage('Room code must be exactly 5 characters.');
       return;
     }
+    if (!socketRef.current?.connected) {
+      setErrorMessage('Connect to the backend before joining a room.');
+      return;
+    }
     setErrorMessage('');
     setIsHost(false);
     setHostLeft(false);
+    setIsSubmitting(true);
+    isJoiningRoomRef.current = true;
     socketRef.current?.emit('join-room', { roomCode: cleanCode });
-    setJoined(true);
+  };
+
+  const handleSaveServerUrl = () => {
+    let formatted = serverInput.trim().replace(/\/+$/, '');
+    if (!formatted) {
+      setErrorMessage('Enter a server address to connect.');
+      return;
+    }
+    if (!/^https?:\/\//i.test(formatted)) {
+      formatted = `http://${formatted}`;
+    }
+    setServerUrl(formatted);
+    setShowManualIp(false);
+    setErrorMessage('');
   };
 
   // ─── Leave room & clean temp cache ────────────────────────────────────────
   const handleLeave = async () => {
+    isJoiningRoomRef.current = false;
+    setIsSubmitting(false);
     if (statusSubscriptionRef.current) {
       statusSubscriptionRef.current.remove();
       statusSubscriptionRef.current = null;
@@ -540,7 +610,15 @@ export default function App() {
         {/* Error Banner */}
         {errorMessage ? (
           <View style={styles.errorBanner}>
-            <Text style={styles.errorText}>{errorMessage}</Text>
+            <Text style={[styles.errorText, styles.errorMessage]}>{errorMessage}</Text>
+            <TouchableOpacity
+              onPress={() => setErrorMessage('')}
+              accessibilityRole="button"
+              accessibilityLabel="Dismiss error message"
+              hitSlop={8}
+            >
+              <Text style={styles.dismissError}>×</Text>
+            </TouchableOpacity>
           </View>
         ) : null}
 
@@ -572,7 +650,12 @@ export default function App() {
               {/* Toggle manual IP */}
               <TouchableOpacity
                 style={{ marginTop: 8, alignSelf: 'flex-start' }}
-                onPress={() => setShowManualIp(!showManualIp)}
+                onPress={() => {
+                  setServerInput(serverUrl);
+                  setShowManualIp(!showManualIp);
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="Configure server address manually"
               >
                 <Text style={styles.toggleManualText}>
                   {showManualIp ? 'Hide manual configuration' : 'Configure IP manually'}
@@ -580,16 +663,37 @@ export default function App() {
               </TouchableOpacity>
 
               {showManualIp && (
-                <View style={{ marginTop: 10 }}>
+                <View style={styles.manualServerForm}>
                   <TextInput
-                    style={styles.input}
+                    style={[styles.input, styles.manualServerInput]}
                     placeholder="http://192.168.1.x:5000"
                     placeholderTextColor="#555"
-                    value={serverUrl}
-                    onChangeText={setServerUrl}
+                    value={serverInput}
+                    onChangeText={setServerInput}
                     autoCapitalize="none"
                     autoCorrect={false}
+                    keyboardType="url"
+                    returnKeyType="done"
+                    onSubmitEditing={handleSaveServerUrl}
                   />
+                  <View style={styles.manualServerActions}>
+                    <TouchableOpacity
+                      style={[styles.compactButton, styles.buttonGreen]}
+                      onPress={handleSaveServerUrl}
+                      accessibilityRole="button"
+                      accessibilityLabel="Connect to server"
+                    >
+                      <Text style={styles.compactButtonText}>Connect</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.compactButton, styles.buttonDark]}
+                      onPress={() => setShowManualIp(false)}
+                      accessibilityRole="button"
+                      accessibilityLabel="Cancel server configuration"
+                    >
+                      <Text style={styles.compactButtonText}>Cancel</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
               )}
             </View>
@@ -597,8 +701,9 @@ export default function App() {
             {/* Create Room section */}
             {!showCreateFlow ? (
               <TouchableOpacity
-                style={[styles.button, styles.buttonGreen]}
+                style={[styles.button, styles.buttonGreen, isSubmitting && styles.buttonDisabled]}
                 onPress={() => setShowCreateFlow(true)}
+                disabled={isSubmitting}
               >
                 <Text style={styles.buttonText}>🚀 Create Room & Host</Text>
               </TouchableOpacity>
@@ -636,11 +741,18 @@ export default function App() {
                 />
 
                 <TouchableOpacity
-                  style={[styles.button, styles.buttonGreen, { marginTop: 12 }]}
+                  style={[
+                    styles.button,
+                    styles.buttonGreen,
+                    { marginTop: 12 },
+                    (songs.length === 0 || isSubmitting) && styles.buttonDisabled,
+                  ]}
                   onPress={handleCreateRoom}
-                  disabled={songs.length === 0}
+                  disabled={songs.length === 0 || isSubmitting}
                 >
-                  <Text style={styles.buttonText}>Start Room with Selected Track</Text>
+                  <Text style={styles.buttonText}>
+                    {isSubmitting ? 'Creating Room…' : 'Start Room with Selected Track'}
+                  </Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity
@@ -680,12 +792,12 @@ export default function App() {
                   styles.button,
                   styles.buttonDark,
                   { marginTop: 4 },
-                  roomCode.length !== 5 && { opacity: 0.4 },
+                  (roomCode.length !== 5 || isSubmitting) && styles.buttonDisabled,
                 ]}
                 onPress={handleJoin}
-                disabled={roomCode.length !== 5}
+                disabled={roomCode.length !== 5 || isSubmitting}
               >
-                <Text style={styles.buttonText}>Join Room</Text>
+                <Text style={styles.buttonText}>{isSubmitting ? 'Joining…' : 'Join Room'}</Text>
               </TouchableOpacity>
             </View>
 
@@ -701,7 +813,7 @@ export default function App() {
                   <Text style={styles.roomLabel}>ROOM CODE</Text>
                   <Text style={styles.roomCode}>{roomCode.toUpperCase()}</Text>
                 </View>
-                <View style={{ flexDirection: 'row', gap: 8 }}>
+                <View style={styles.roomActions}>
                   {isHost && (
                     <TouchableOpacity
                       style={styles.iconButton}
@@ -867,6 +979,8 @@ const styles = StyleSheet.create({
   errorBanner: {
     width: '100%',
     maxWidth: 400,
+    flexDirection: 'row',
+    alignItems: 'center',
     backgroundColor: '#ff444420',
     borderWidth: 1,
     borderColor: '#ff4444',
@@ -875,6 +989,8 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   errorText: { color: '#ff6b6b', fontSize: 13, textAlign: 'center' },
+  errorMessage: { flex: 1, textAlign: 'left' },
+  dismissError: { color: '#ff9b9b', fontSize: 24, lineHeight: 24, marginLeft: 10 },
   card: {
     width: '100%',
     backgroundColor: '#1e1e1e',
@@ -913,6 +1029,21 @@ const styles = StyleSheet.create({
     fontSize: 12,
     textDecorationLine: 'underline',
   },
+  manualServerForm: { marginTop: 12 },
+  manualServerInput: { marginBottom: 8 },
+  manualServerActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 8,
+  },
+  compactButton: {
+    minHeight: 40,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  compactButtonText: { color: '#fff', fontSize: 13, fontWeight: '700' },
   sectionTitle: {
     fontSize: 16,
     fontWeight: '700',
@@ -942,6 +1073,7 @@ const styles = StyleSheet.create({
   },
   buttonGreen: { backgroundColor: '#1db954' },
   buttonDark: { backgroundColor: '#2a2a2a', borderWidth: 1, borderColor: '#333' },
+  buttonDisabled: { opacity: 0.45 },
   buttonText: { color: '#fff', fontSize: 15, fontWeight: 'bold' },
   divider: {
     flexDirection: 'row',
@@ -972,7 +1104,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 12,
     marginBottom: 16,
+  },
+  roomActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
+    gap: 8,
   },
   roomLabel: { fontSize: 11, color: '#777', textTransform: 'uppercase' },
   roomCode: { fontSize: 24, fontWeight: 'bold', color: '#1db954', letterSpacing: 2 },
