@@ -25,11 +25,13 @@ function App() {
   const [isDownloading, setIsDownloading] = useState(false)
   const [downloadProgress, setDownloadProgress] = useState(0)
   const [showSongPicker, setShowSongPicker] = useState(false)
+  const [isSubmitting, setIsSubmitting] = useState(false)
 
   const audioRef = useRef(null)
   const isRemoteEvent = useRef(false)
   const activeBlobUrlRef = useRef('')
   const socketRef = useRef(null)
+  const isJoiningRoomRef = useRef(false)
 
   // Helper to test if a given server URL responds to /health
   const probeUrl = useCallback(async (url, timeoutMs = 1200) => {
@@ -254,6 +256,11 @@ function App() {
 
     socket.on('disconnect', () => {
       setStatusText('Disconnected')
+      if (isJoiningRoomRef.current) {
+        isJoiningRoomRef.current = false
+        setIsSubmitting(false)
+        setErrorMessage('Connection lost while joining the room. Please try again.')
+      }
     })
 
     socket.on('connect_error', () => {
@@ -297,6 +304,9 @@ function App() {
     })
 
     socket.on('room-role', ({ isHost: assignedHost }) => {
+      isJoiningRoomRef.current = false
+      setIsSubmitting(false)
+      setJoined(true)
       setIsHost(assignedHost)
       setHostLeft(false)
       setErrorMessage('')
@@ -312,7 +322,14 @@ function App() {
       }, 250)
     })
 
-    socket.on('room-error', ({ message }) => setErrorMessage(message))
+    socket.on('room-error', ({ message }) => {
+      if (isJoiningRoomRef.current) {
+        isJoiningRoomRef.current = false
+        setJoined(false)
+      }
+      setIsSubmitting(false)
+      setErrorMessage(message)
+    })
     socket.on('control-denied', ({ message }) => setErrorMessage(message))
 
     return () => {
@@ -338,6 +355,13 @@ function App() {
   }
 
   const handleCreateRoom = async () => {
+    if (isSubmitting) return
+    if (!socketRef.current?.connected) {
+      setErrorMessage('Connect to the backend before creating a room.')
+      return
+    }
+
+    setIsSubmitting(true)
     try {
       setErrorMessage('')
       const res = await fetch(`${serverUrl}/api/create-room`, {
@@ -354,30 +378,40 @@ function App() {
         if (data.room.currentSong) {
           downloadAndPrepareAudio(data.room.currentSong)
         }
+        isJoiningRoomRef.current = true
         socketRef.current?.emit('join-room', { roomCode: newCode })
-        setJoined(true)
       } else {
+        setIsSubmitting(false)
         setErrorMessage(data.error || 'Failed to create room.')
       }
     } catch {
+      setIsSubmitting(false)
       setErrorMessage(`Cannot reach backend at ${serverUrl}`)
     }
   }
 
   const handleJoin = () => {
+    if (isSubmitting) return
     const cleanCode = roomCode.trim().toUpperCase()
-    if (!cleanCode) {
-      setErrorMessage('Please enter a room code.')
+    if (cleanCode.length !== 5) {
+      setErrorMessage('Room code must be exactly 5 characters.')
+      return
+    }
+    if (!socketRef.current?.connected) {
+      setErrorMessage('Connect to the backend before joining a room.')
       return
     }
     setErrorMessage('')
     setIsHost(false)
     setHostLeft(false)
+    setIsSubmitting(true)
+    isJoiningRoomRef.current = true
     socketRef.current?.emit('join-room', { roomCode: cleanCode })
-    setJoined(true)
   }
 
   const handleLeave = () => {
+    isJoiningRoomRef.current = false
+    setIsSubmitting(false)
     audioRef.current?.pause()
     socketRef.current?.emit('leave-room', { roomCode: roomCode.toUpperCase() })
     if (activeBlobUrlRef.current) {
@@ -561,6 +595,15 @@ function App() {
                     <div
                       key={song.id}
                       onClick={() => setSelectedSongId(song.id)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault()
+                          setSelectedSongId(song.id)
+                        }
+                      }}
+                      role="button"
+                      tabIndex={0}
+                      aria-pressed={isSelected}
                       className={`song-item ${isSelected ? 'selected' : ''}`}
                     >
                       <div className="song-info">
@@ -579,11 +622,11 @@ function App() {
 
             <button
               onClick={handleCreateRoom}
-              disabled={songs.length === 0}
+              disabled={songs.length === 0 || isSubmitting}
               className="btn btn-primary"
               style={{ marginTop: '18px' }}
             >
-              🚀 Create Room & Host
+              {isSubmitting ? 'Creating Room…' : '🚀 Create Room & Host'}
             </button>
           </section>
 
@@ -602,14 +645,21 @@ function App() {
                 type="text"
                 placeholder="Enter 5-digit code..."
                 value={roomCode}
-                maxLength={10}
-                onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
+                maxLength={5}
+                onChange={(e) =>
+                  setRoomCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))
+                }
                 onKeyDown={(e) => e.key === 'Enter' && handleJoin()}
                 className="input-code"
               />
 
-              <button onClick={handleJoin} className="btn btn-secondary" style={{ width: '100%' }}>
-                Join Session
+              <button
+                onClick={handleJoin}
+                disabled={roomCode.length !== 5 || isSubmitting}
+                className="btn btn-secondary"
+                style={{ width: '100%' }}
+              >
+                {isSubmitting ? 'Joining…' : 'Join Session'}
               </button>
             </div>
 
@@ -668,6 +718,15 @@ function App() {
                     <div
                       key={song.id}
                       onClick={() => handleChangeSong(song.id)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault()
+                          handleChangeSong(song.id)
+                        }
+                      }}
+                      role="button"
+                      tabIndex={0}
+                      aria-pressed={isCurrent}
                       className={`song-item ${isCurrent ? 'selected' : ''}`}
                     >
                       <div className="song-info">
