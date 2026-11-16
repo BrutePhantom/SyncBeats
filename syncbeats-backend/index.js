@@ -325,7 +325,8 @@ io.on('connection', (socket) => {
 
         const isHost = roomHosts[cleanRoomCode] === socket.id;
 
-        // Persist participant in SQLite
+        // Participant history is non-essential. A database migration or a temporary
+        // SQLite write issue must not prevent a newly-created room from being hosted.
         try {
             const participant = await prisma.roomParticipant.create({
                 data: {
@@ -337,16 +338,7 @@ io.on('connection', (socket) => {
 
             socketParticipants.set(`${socket.id}:${cleanRoomCode}`, participant.id);
         } catch (err) {
-            console.error('Failed to save room participant:', err);
-
-            socket.leave(cleanRoomCode);
-
-            if (isHost) {
-                delete roomHosts[cleanRoomCode];
-            }
-
-            socket.emit('room-error', { message: 'Could not join room. Please try again.' });
-            return;
+            console.warn('Could not save participant history; allowing room join:', err.message);
         }
 
         socket.emit('room-role', { isHost });
