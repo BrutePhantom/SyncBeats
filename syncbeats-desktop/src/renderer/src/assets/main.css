@@ -42,6 +42,18 @@ body {
   user-select: none;
 }
 
+button,
+input {
+  font: inherit;
+}
+
+button:focus-visible,
+input:focus-visible,
+[role='button']:focus-visible {
+  outline: 2px solid #34d399;
+  outline-offset: 3px;
+}
+
 #root {
   min-height: 100vh;
   display: flex;
@@ -259,6 +271,11 @@ body {
   box-shadow: 0 0 12px rgba(16, 185, 129, 0.12);
 }
 
+.song-item:focus-visible {
+  outline: 2px solid #34d399;
+  outline-offset: 2px;
+}
+
 .song-info {
   display: flex;
   align-items: center;
@@ -332,6 +349,11 @@ body {
 .btn-secondary:hover {
   background: var(--bg-card-hover);
   border-color: var(--border-highlight);
+}
+
+.btn-secondary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .btn-danger {
@@ -685,4 +707,81 @@ body {
   align-items: center;
   padding-top: 12px;
   border-top: 1px solid var(--border-subtle);
+}
+
+@media (max-width: 560px) {
+  .app-container {
+    padding: 20px 16px 32px;
+    gap: 16px;
+  }
+
+  .app-header,
+  .room-bar,
+  .server-manual-input-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .app-header,
+  .room-bar {
+    gap: 14px;
+  }
+
+  .status-badge {
+    align-self: flex-start;
+  }
+
+  .dark-card,
+  .player-main-card,
+  .room-bar {
+    padding: 18px;
+  }
+
+  .server-connection-actions,
+  .room-bar > div:last-child {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .server-connection-actions .btn,
+  .room-bar > div:last-child .btn {
+    flex: 1;
+  }
+
+  .track-hero {
+    align-items: flex-start;
+    gap: 14px;
+  }
+
+  .album-art-fallback {
+    width: 60px;
+    height: 60px;
+    font-size: 26px;
+  }
+
+  .track-meta h2 {
+    font-size: 18px;
+    overflow-wrap: anywhere;
+  }
+
+  .badge-row,
+  .download-labels,
+  .follower-state-box {
+    flex-wrap: wrap;
+  }
+
+  .download-labels {
+    gap: 4px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
 }
